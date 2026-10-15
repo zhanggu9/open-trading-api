@@ -279,128 +279,83 @@ async def prepare_market_data(
     end_date: str,
     workspace: Path,
 ) -> dict:
-    """백테스트용 시장 데이터 준비 (KIS API → Lean CSV)
-    
+    """PostgreSQL의 OHLCV를 조회해 LEAN용 일봉 CSV 파일을 준비한다.
+
+    PostgreSQL이 원본 데이터다. 기존 CSV가 있더라도 날짜 범위와 관계없이
+    DB를 다시 조회해 최신 DB 데이터를 반영한다.
+
     Returns:
-        {"downloaded": [...], "skipped": [...], "errors": [...]}
+        {"downloaded": [...], "skipped": [], "errors": [...]}
     """
-    from kis_backtest.providers.kis.auth import KISAuth
-    from kis_backtest.providers.kis.data import KISDataProvider
-    
+    from psycopg import Error as PostgresError
+    from kis_backtest.providers.postgres import PostgresDataProvider
+
     output_dir = workspace / "data" / "equity" / "krx" / "daily"
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     result = {"downloaded": [], "skipped": [], "errors": []}
-    
-    # 요청 날짜 파싱
+
+    # API 입력 날짜를 Python date 형식으로 변환
     req_start = datetime.strptime(start_date, "%Y-%m-%d").date()
     req_end = datetime.strptime(end_date, "%Y-%m-%d").date()
-    
-    def check_date_coverage(csv_path: Path) -> bool:
-        """CSV 파일이 요청 날짜 범위를 커버하는지 확인 (관대한 체크)
 
-        캐싱 정책:
-        1. 종료일: 7일(주말 포함 5영업일) 허용 - 휴장일/주말 대응
-        2. 시작일: 데이터 시작 후면 OK - 과거 데이터 불필요
-        3. 커버리지: 85% 이상이면 캐시 사용
-        """
-        try:
-            with open(csv_path, 'r') as f:
-                lines = f.readlines()
-                if len(lines) < 2:
-                    return False
+    # 연결 정보와 테이블/컬럼 설정은 backtester/.env에서 읽는다.
+    provider = PostgresDataProvider()
 
-                # 첫번째/마지막 줄에서 날짜 추출 (YYYYMMDD 형식)
-                first_date_str = lines[0].split(',')[0].strip()
-                last_date_str = lines[-1].split(',')[0].strip()
-
-                first_date = datetime.strptime(first_date_str, "%Y%m%d").date()
-                last_date = datetime.strptime(last_date_str, "%Y%m%d").date()
-
-                # 관대한 날짜 체크
-                tolerance_days = 7  # 주말 포함 약 5 영업일
-                coverage_threshold = 0.85  # 85% 이상 커버 시 캐시 사용
-
-                # 1. 종료일 체크: tolerance_days 허용
-                if req_end > last_date + timedelta(days=tolerance_days):
-                    logger.info(f"[Data] 종료일 초과: 요청={req_end}, 데이터={last_date} (허용={tolerance_days}일)")
-                    return False
-
-                # 2. 시작일 체크: 데이터 시작 후면 OK (너무 이전 데이터 요청 시만 실패)
-                # 요청 시작일이 데이터보다 30일 이상 앞서면 재다운로드
-                if req_start < first_date - timedelta(days=30):
-                    logger.info(f"[Data] 시작일 부족: 요청={req_start}, 데이터 시작={first_date}")
-                    return False
-
-                # 3. 커버리지 체크
-                req_days = (req_end - req_start).days
-                if req_days <= 0:
-                    return True  # 당일 요청
-
-                # 실제 커버 가능한 범위 계산
-                effective_start = max(req_start, first_date)
-                effective_end = min(req_end, last_date)
-                covered_days = (effective_end - effective_start).days
-
-                coverage = covered_days / req_days if req_days > 0 else 1.0
-
-                if coverage < coverage_threshold:
-                    logger.info(f"[Data] 커버리지 부족: {coverage:.1%} < {coverage_threshold:.0%}")
-                    return False
-
-                logger.info(f"[Data] 캐시 사용 (커버리지={coverage:.1%})")
-                return True
-
-        except (OSError, ValueError) as e:  # 파일 읽기 실패, 날짜 파싱 실패
-            logger.warning(f"[Data] 날짜 체크 실패: {type(e).__name__}")
-            return False
-    
-    # 이미 있는 파일 확인 - 날짜 범위도 체크
-    for symbol in symbols:
+    for idx, symbol in enumerate(symbols, start=1):
         csv_path = output_dir / f"{symbol.lower()}.csv"
-        if csv_path.exists() and csv_path.stat().st_size > 100:
-            if check_date_coverage(csv_path):
-                result["skipped"].append(symbol)
-                continue
-            else:
-                # 날짜 범위 불일치 - 파일 삭제 후 재다운로드
-                logger.info("[Data] 날짜 범위 불일치로 재다운로드")
-                csv_path.unlink()
-    
-    symbols_to_download = [s for s in symbols if s not in result["skipped"]]
-    
-    if not symbols_to_download:
-        logger.info("[Data] 모든 종목 데이터 캐시 사용")
-        return result
-    
-    # KIS 인증
-    try:
-        auth = KISAuth.from_env()
-        provider = KISDataProvider(auth)
-    except KIS_AUTH_ERRORS as e:
-        logger.warning(f"[Data] KIS 인증 실패: {type(e).__name__} - 기존 캐시만 사용")
-        for s in symbols_to_download:
-            result["errors"].append({"symbol": s, "error": str(e)})
-        return result
-    
-    # 데이터 다운로드
-    for idx, symbol in enumerate(symbols_to_download, start=1):
+
         try:
-            logger.info(f"[Data] 다운로드 중 ({idx}/{len(symbols_to_download)})")
+            logger.info(
+                f"[PostgreSQL] 일봉 조회 중 ({idx}/{len(symbols)}): {symbol}"
+            )
             bars = provider.get_history(symbol, req_start, req_end)
-            
-            if bars:
-                # Lean CSV 변환
-                DataConverter.bars_to_lean_csv(bars, symbol, output_dir)
-                result["downloaded"].append(symbol)
-                logger.info(f"[Data] 완료 ({idx}/{len(symbols_to_download)}, {len(bars)} bars)")
-            else:
-                result["errors"].append({"symbol": symbol, "error": "데이터 없음"})
-                
-        except _KIS_DATA_ERRORS as e:
-            logger.error(f"[Data] 다운로드 실패 ({idx}/{len(symbols_to_download)}): {type(e).__name__}")
-            result["errors"].append({"symbol": symbol, "error": str(e)})
-    
+
+            if not bars:
+                # 예전 CSV가 남아 있으면 데이터가 있는 것처럼 오인할 수 있어 제거한다.
+                csv_path.unlink(missing_ok=True)
+                result["errors"].append({
+                    "symbol": symbol,
+                    "error": (
+                        f"PostgreSQL에 요청 기간의 OHLCV 데이터가 없습니다: "
+                        f"{start_date} ~ {end_date}"
+                    ),
+                })
+                logger.warning(f"[PostgreSQL] 데이터 없음: {symbol}")
+                continue
+
+            # LEAN의 기존 파일 기반 데이터 피드가 읽을 수 있는 형식으로 저장한다.
+            DataConverter.bars_to_lean_csv(bars, symbol, output_dir)
+            result["downloaded"].append(symbol)
+            logger.info(
+                f"[PostgreSQL] 조회 완료 ({idx}/{len(symbols)}): "
+                f"{symbol}, {len(bars)} bars"
+            )
+
+        except PostgresError as exc:
+            # DB 자체 오류가 나면 같은 오류로 나머지 종목을 반복 조회하지 않는다.
+            logger.exception(
+                f"[PostgreSQL] 조회 오류: {symbol} ({type(exc).__name__})"
+            )
+            for remaining_symbol in symbols[idx - 1:]:
+                result["errors"].append({
+                    "symbol": remaining_symbol,
+                    "error": (
+                        "PostgreSQL 조회 오류: "
+                        f"{type(exc).__name__}. DB 연결, 권한, 테이블/컬럼 설정을 확인하세요."
+                    ),
+                })
+            break
+        except (OSError, ValueError, TypeError, OverflowError) as exc:
+            logger.exception(
+                f"[PostgreSQL] 데이터 변환/저장 실패: "
+                f"{symbol} ({type(exc).__name__})"
+            )
+            result["errors"].append({
+                "symbol": symbol,
+                "error": f"데이터 변환/저장 실패: {type(exc).__name__}",
+            })
+
     return result
 
 
@@ -547,9 +502,16 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
         )
         
         # 데이터 없으면 에러
-        if data_result["errors"] and not data_result["downloaded"] and not data_result["skipped"]:
-            error_msg = data_result["errors"][0]["error"] if data_result["errors"] else "데이터 다운로드 실패"
-            raise HTTPException(status_code=400, detail=f"데이터 준비 실패: {error_msg}")
+        if data_result["errors"]:
+            first_error = data_result["errors"][0]
+            error_msg = first_error["error"]
+            failed_symbols = ", ".join(
+                item["symbol"] for item in data_result["errors"]
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"PostgreSQL 데이터 준비 실패 ({failed_symbols}): {error_msg}",
+            )
             
     except HTTPException:
         raise
@@ -691,9 +653,16 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
         )
         
         # 데이터 없으면 에러
-        if data_result["errors"] and not data_result["downloaded"] and not data_result["skipped"]:
-            error_msg = data_result["errors"][0]["error"] if data_result["errors"] else "데이터 다운로드 실패"
-            raise HTTPException(status_code=400, detail=f"데이터 준비 실패: {error_msg}")
+        if data_result["errors"]:
+            first_error = data_result["errors"][0]
+            error_msg = first_error["error"]
+            failed_symbols = ", ".join(
+                item["symbol"] for item in data_result["errors"]
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"PostgreSQL 데이터 준비 실패 ({failed_symbols}): {error_msg}",
+            )
             
     except HTTPException:
         raise
