@@ -616,9 +616,6 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
             logger.info(
                 f"[Timing] phase=total seconds={perf_counter() - request_started:.3f}"
             )
-            logger.info(
-                f"[Timing] phase=total seconds={perf_counter() - request_started:.3f}"
-            )
             return BacktestResponse(
                 success=True,
                 data=result_data,
@@ -791,6 +788,9 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
                 lean_run, schema.name, request.symbols,
                 request.start_date, request.end_date, request.initial_capital,
                 workspace=workspace,
+            )
+            logger.info(
+                f"[Timing] phase=total seconds={perf_counter() - request_started:.3f}"
             )
             return BacktestResponse(
                 success=True,
