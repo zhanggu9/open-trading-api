@@ -4,6 +4,7 @@ Lean Docker 기반 백테스트 실행.
 """
 
 import logging
+from time import perf_counter
 from typing import Any, Dict, List, Optional
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -78,6 +79,14 @@ def _load_benchmark_curve(
 
         # 시작일 기준 수익률 계산
         sorted_dates = sorted(prices.keys())
+        first_data_date = sorted_dates[0]
+        if first_data_date > req_start + timedelta(days=14):
+            logging.getLogger(__name__).warning(
+                f"[Benchmark] 시작일 데이터 부족: 요청={req_start}, "
+                f"실제={first_data_date} → 불완전한 벤치마크 비교 비활성화"
+            )
+            return None
+
         base_price = prices[sorted_dates[0]]
 
         if base_price <= 0:
@@ -436,7 +445,10 @@ async def prepare_benchmark_data(
             with open(csv_path, "w") as f:
                 for bar in bars:
                     f.write(bar.to_lean_csv_line() + "\n")
-            logger.info(f"[Benchmark] 저장 완료: {len(bars)}건")
+            logger.info(
+                f"[Benchmark] 저장 완료: rows={len(bars)}, "
+                f"first={bars[0].time.date()}, last={bars[-1].time.date()}"
+            )
             return True
         else:
             logger.warning(f"[Benchmark] 데이터 없음: {index_name}")
@@ -459,6 +471,7 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
     param_overrides 예시:
         {"period": 21, "oversold": 25}
     """
+    request_started = perf_counter()
 
     # 전략 빌드 (param_overrides 적용)
     try:
@@ -489,6 +502,7 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
     workspace = manager.workspace
     
     # 시장 데이터 준비 (PostgreSQL → Lean CSV)
+    data_started = perf_counter()
     try:
         data_result = await prepare_market_data(
             symbols=request.symbols,
@@ -499,6 +513,9 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
         logger.info(
             f"[Data] 결과: PostgreSQL 조회 {len(data_result['downloaded'])}, "
             f"실패 {len(data_result['errors'])}"
+        )
+        logger.info(
+            f"[Timing] phase=postgresql_data seconds={perf_counter() - data_started:.3f}"
         )
         
         # 데이터 없으면 에러
@@ -519,6 +536,7 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
         raise HTTPException(status_code=500, detail=f"데이터 준비 실패: {e}")
 
     # 벤치마크 데이터 준비 (KOSPI)
+    benchmark_started = perf_counter()
     try:
         await prepare_benchmark_data(
             start_date=start_date,
@@ -527,8 +545,13 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
         )
     except _DATA_PREP_ERRORS as e:
         logger.warning(f"[Benchmark] 준비 실패 (무시): {type(e).__name__}")
+    finally:
+        logger.info(
+            f"[Timing] phase=kis_benchmark seconds={perf_counter() - benchmark_started:.3f}"
+        )
 
     # Lean 코드 생성
+    codegen_started = perf_counter()
     try:
         # 거래 비용 설정
         config = CodeGenConfig(
@@ -543,6 +566,9 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
             start_date=start_date,
             end_date=end_date,
             initial_capital=request.initial_capital,
+        )
+        logger.info(
+            f"[Timing] phase=code_generation seconds={perf_counter() - codegen_started:.3f}"
         )
     except BOUNDARY_ERRORS as e:
         raise HTTPException(status_code=400, detail=f"Code generation failed: {e}")
@@ -574,13 +600,24 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
         # 코드 저장
         project.main_py.write_text(code)
 
+        lean_started = perf_counter()
         lean_run = LeanExecutor.run(project)
+        logger.info(
+            f"[Timing] phase=lean_execution seconds={perf_counter() - lean_started:.3f} "
+            f"success={lean_run.success}"
+        )
 
         if lean_run.success:
             result_data = _lean_run_to_api_response(
                 lean_run, definition.name, request.symbols,
                 start_date, end_date, request.initial_capital,
                 workspace=workspace,
+            )
+            logger.info(
+                f"[Timing] phase=total seconds={perf_counter() - request_started:.3f}"
+            )
+            logger.info(
+                f"[Timing] phase=total seconds={perf_counter() - request_started:.3f}"
             )
             return BacktestResponse(
                 success=True,
@@ -624,6 +661,7 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
     param_overrides로 YAML의 $param_name 값을 오버라이드할 수 있습니다.
     예: {"period": 21, "oversold": 25}
     """
+    request_started = perf_counter()
     from kis_backtest.file.loader import StrategyFileLoader
 
     # YAML 파싱 → StrategySchema (타입 안전, param_overrides 적용)
@@ -640,6 +678,7 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
     workspace = manager.workspace
     
     # 시장 데이터 준비 (PostgreSQL → Lean CSV)
+    data_started = perf_counter()
     try:
         data_result = await prepare_market_data(
             symbols=request.symbols,
@@ -650,6 +689,9 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
         logger.info(
             f"[Data] 결과: PostgreSQL 조회 {len(data_result['downloaded'])}, "
             f"실패 {len(data_result['errors'])}"
+        )
+        logger.info(
+            f"[Timing] phase=postgresql_data seconds={perf_counter() - data_started:.3f}"
         )
         
         # 데이터 없으면 에러
@@ -670,6 +712,7 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
         raise HTTPException(status_code=500, detail=f"데이터 준비 실패: {e}")
 
     # 벤치마크 데이터 준비 (KOSPI)
+    benchmark_started = perf_counter()
     try:
         await prepare_benchmark_data(
             start_date=request.start_date,
@@ -678,8 +721,13 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
         )
     except _DATA_PREP_ERRORS as e:
         logger.warning(f"[Benchmark] 준비 실패 (무시): {type(e).__name__}")
+    finally:
+        logger.info(
+            f"[Timing] phase=kis_benchmark seconds={perf_counter() - benchmark_started:.3f}"
+        )
 
     # Lean 코드 생성 (스키마 기반)
+    codegen_started = perf_counter()
     try:
         if schema is None:
             raise HTTPException(status_code=400, detail="전략 스키마 생성 실패")
@@ -697,6 +745,9 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
             start_date=request.start_date,
             end_date=request.end_date,
             initial_capital=request.initial_capital,
+        )
+        logger.info(
+            f"[Timing] phase=code_generation seconds={perf_counter() - codegen_started:.3f}"
         )
     except BOUNDARY_ERRORS as e:
         raise HTTPException(status_code=400, detail=f"Code generation failed: {e}")
@@ -728,7 +779,12 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
         # 코드 저장
         project.main_py.write_text(code)
 
+        lean_started = perf_counter()
         lean_run = LeanExecutor.run(project)
+        logger.info(
+            f"[Timing] phase=lean_execution seconds={perf_counter() - lean_started:.3f} "
+            f"success={lean_run.success}"
+        )
 
         if lean_run.success:
             result_data = _lean_run_to_api_response(
