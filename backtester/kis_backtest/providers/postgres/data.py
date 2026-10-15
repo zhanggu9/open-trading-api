@@ -9,7 +9,6 @@ from __future__ import annotations
 import os
 import re
 from datetime import date, datetime, time
-from typing import Any
 
 import psycopg
 
@@ -45,14 +44,15 @@ def _env_column(name: str, default: str) -> str:
 
 
 class PostgresDataProvider:
-    """PostgreSQL의 OHLCV 테이블에서 일봉 데이터를 조회한다.
+    """PostgreSQL의 public.ohlcv 테이블에서 일봉 데이터를 조회한다.
 
-    기본 테이블/컬럼 예시:
-        public.ohlcv_daily(
-            symbol, trade_date, open, high, low, close, volume
+    기본 스키마:
+        public.ohlcv(
+            ticker_code, trade_date, open, high, low, close, adj_close, volume
         )
 
-    위 이름은 예시이므로 실제 DB 스키마에 맞춰 환경변수를 설정해야 한다.
+    현재는 open/high/low/close/volume을 사용한다.
+    adj_close는 조정종가만 제공하므로 OHLC와 섞어 쓰지 않는다.
     """
 
     def __init__(self, dsn: str | None = None) -> None:
@@ -63,9 +63,9 @@ class PostgresDataProvider:
             )
 
         self._table = _quote_table_name(
-            os.getenv("PG_OHLCV_TABLE", "public.ohlcv_daily").strip()
+            os.getenv("PG_OHLCV_TABLE", "public.ohlcv").strip()
         )
-        self._symbol_col = _env_column("PG_SYMBOL_COLUMN", "symbol")
+        self._symbol_col = _env_column("PG_SYMBOL_COLUMN", "ticker_code")
         self._date_col = _env_column("PG_DATE_COLUMN", "trade_date")
         self._open_col = _env_column("PG_OPEN_COLUMN", "open")
         self._high_col = _env_column("PG_HIGH_COLUMN", "high")
@@ -125,7 +125,6 @@ class PostgresDataProvider:
             elif isinstance(trade_date, date):
                 bar_time = datetime.combine(trade_date, time.min)
             else:
-                # date/timestamp 컬럼이 아닌 형식은 자동 해석하지 않는다.
                 raise TypeError(
                     "거래일 컬럼은 PostgreSQL DATE 또는 TIMESTAMP 형식이어야 합니다."
                 )
