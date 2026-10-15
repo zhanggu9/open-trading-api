@@ -41,7 +41,7 @@ env/
 *.sublime-workspace
 
 # Local config
-.env
+
 .env.local
 .env.*.local
 

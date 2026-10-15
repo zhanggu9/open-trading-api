@@ -136,7 +136,7 @@ node_modules/
 next-env.d.ts
 
 # ===== Environment / Secrets =====
-.env
+
 .env.local
 .env.*.local
 *.pem
