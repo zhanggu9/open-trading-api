@@ -482,8 +482,9 @@ class KISDataProvider:
         all_bars: List[IndexBar] = []
         cursor_date = end.strftime("%Y%m%d")
         start_str = start.strftime("%Y%m%d")
+        started_at = time.perf_counter()
 
-        for _ in range(10):  # 최대 10 페이지
+        for page in range(1, 11):  # 최대 10 페이지
             params = {
                 "FID_COND_MRKT_DIV_CODE": "U",  # U=업종
                 "FID_INPUT_ISCD": index_code,
@@ -509,12 +510,32 @@ class KISDataProvider:
                 break
 
             if not resp.is_ok():
-                logger.error(f"지수 조회 실패: {resp.error_message}")
+                # 인증 정보 등 민감한 응답은 기록하지 않고 오류 코드만 남긴다.
+                logger.error(
+                    f"[Benchmark] 지수 조회 실패: page={page}, "
+                    f"code={resp.error_code}"
+                )
                 break
 
             output = resp.get_output2()
             if not output:
+                logger.warning(
+                    f"[Benchmark] 지수 응답 데이터 없음: page={page}, "
+                    f"requested_end={cursor_date}"
+                )
                 break
+
+            page_dates = [
+                row.get("stck_bsop_date", "")
+                for row in output
+                if row.get("stck_bsop_date")
+            ]
+            logger.info(
+                f"[Benchmark] 지수 페이지: page={page}, rows={len(output)}, "
+                f"oldest={min(page_dates) if page_dates else 'n/a'}, "
+                f"newest={max(page_dates) if page_dates else 'n/a'}, "
+                f"requested_end={cursor_date}"
+            )
 
             for item in output:
                 dt_str = item.get("stck_bsop_date")
@@ -546,7 +567,24 @@ class KISDataProvider:
             ).strftime("%Y%m%d")
             self._auth.smart_sleep()
 
-        # 오래된 순 정렬
-        all_bars.sort(key=lambda b: b.time)
-        logger.info(f"지수 조회 완료: {index_code}, {len(all_bars)}건")
+        # 날짜 중복 제거 후 오래된 순 정렬
+        unique_by_date = {bar.time.date(): bar for bar in all_bars}
+        all_bars = sorted(unique_by_date.values(), key=lambda b: b.time)
+        if all_bars:
+            first_date = all_bars[0].time.date()
+            last_date = all_bars[-1].time.date()
+            if first_date > start + timedelta(days=14):
+                logger.warning(
+                    f"[Benchmark] 요청 시작일 데이터 누락: "
+                    f"요청={start}, 실제={first_date}, 종료={last_date}. "
+                    "벤치마크 수익률 비교에는 전체 기간 데이터가 필요합니다."
+                )
+        else:
+            first_date = last_date = None
+
+        logger.info(
+            f"[Benchmark] 지수 조회 완료: code={index_code}, "
+            f"rows={len(all_bars)}, first={first_date}, last={last_date}, "
+            f"elapsed={time.perf_counter() - started_at:.3f}s"
+        )
         return all_bars
