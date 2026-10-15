@@ -488,7 +488,7 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
     manager = LeanProjectManager()
     workspace = manager.workspace
     
-    # 시장 데이터 준비 (KIS API → Lean CSV)
+    # 시장 데이터 준비 (PostgreSQL → Lean CSV)
     try:
         data_result = await prepare_market_data(
             symbols=request.symbols,
@@ -497,8 +497,8 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
             workspace=workspace,
         )
         logger.info(
-            f"[Data] 결과: 다운로드 {len(data_result['downloaded'])}, "
-            f"캐시 {len(data_result['skipped'])}, 실패 {len(data_result['errors'])}"
+            f"[Data] 결과: PostgreSQL 조회 {len(data_result['downloaded'])}, "
+            f"실패 {len(data_result['errors'])}"
         )
         
         # 데이터 없으면 에러
@@ -639,7 +639,7 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
     manager = LeanProjectManager()
     workspace = manager.workspace
     
-    # 시장 데이터 준비 (KIS API → Lean CSV)
+    # 시장 데이터 준비 (PostgreSQL → Lean CSV)
     try:
         data_result = await prepare_market_data(
             symbols=request.symbols,
@@ -648,8 +648,8 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
             workspace=workspace,
         )
         logger.info(
-            f"[Data] 결과: 다운로드 {len(data_result['downloaded'])}, "
-            f"캐시 {len(data_result['skipped'])}, 실패 {len(data_result['errors'])}"
+            f"[Data] 결과: PostgreSQL 조회 {len(data_result['downloaded'])}, "
+            f"실패 {len(data_result['errors'])}"
         )
         
         # 데이터 없으면 에러
