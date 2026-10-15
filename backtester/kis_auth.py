@@ -43,15 +43,26 @@ token_tmp = os.path.join(
     config_root, f"KIS{datetime.today().strftime('%Y%m%d')}"
 )  # 토큰 로컬저장시 파일명 년월일
 
-# 접근토큰 관리하는 파일 존재여부 체크, 없으면 생성
-# "a" 모드: 없으면 생성, 있으면 내용 유지. with 블록으로 파일 핸들 즉시 해제
+# KIS 토큰 디렉터리는 없으면 생성한다.
+os.makedirs(config_root, exist_ok=True)
+
+# 접근토큰 관리 파일이 없으면 생성한다.
 with open(token_tmp, "a", encoding="utf-8"):
     pass
 
-# 앱키, 앱시크리트, 토큰, 계좌번호 등 저장관리, 자신만의 경로와 파일명으로 설정하시기 바랍니다.
-# pip install PyYAML (패키지설치)
-with open(os.path.join(config_root, "kis_devlp.yaml"), encoding="UTF-8") as f:
-    _cfg = yaml.safe_load(f)
+# KIS 설정은 선택 사항으로 취급한다.
+# PostgreSQL 기반 백테스트는 KIS 인증 설정 없이도 서버를 시작할 수 있어야 한다.
+_config_path = os.path.join(config_root, "kis_devlp.yaml")
+try:
+    with open(_config_path, encoding="UTF-8") as f:
+        _cfg = yaml.safe_load(f) or {}
+except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+    _cfg = {}
+    logging.getLogger(__name__).warning(
+        "KIS 설정 파일을 읽지 못했습니다. KIS 인증 기능은 사용할 수 없습니다: %s (%s)",
+        _config_path,
+        exc,
+    )
 
 _TRENV = tuple()
 _last_auth_time = datetime.now()
@@ -71,7 +82,7 @@ _base_headers = {
     "Content-Type": "application/json",
     "Accept": "text/plain",
     "charset": "UTF-8",
-    "User-Agent": _cfg["my_agent"],
+    "User-Agent": _cfg.get("my_agent", "open-trading-api"),
 }
 
 
@@ -167,7 +178,9 @@ def isPaperTrading():  # 모의투자 매매
 
 
 # 실전투자면 'prod', 모의투자면 'vps'를 셋팅 하시기 바랍니다.
-def changeTREnv(token_key, svr="prod", product=_cfg["my_prod"]):
+def changeTREnv(token_key, svr="prod", product=None):
+    if product is None:
+        product = _cfg.get("my_prod", "01")
     cfg = dict()
 
     global _isPaper
@@ -223,7 +236,15 @@ def _getResultObject(json_data):
 
 # Token 발급, 유효기간 1일, 6시간 이내 발급시 기존 token값 유지, 발급시 알림톡 무조건 발송
 # 모의투자인 경우  svr='vps', 투자계좌(01)이 아닌경우 product='XX' 변경하세요 (계좌번호 뒤 2자리)
-def auth(svr="prod", product=_cfg["my_prod"], url=None):
+def auth(svr="prod", product=None, url=None):
+    if not _cfg:
+        raise FileNotFoundError(
+            f"KIS 설정 파일이 없습니다: {_config_path}. "
+            "KIS 인증 기능을 사용하려면 kis_devlp.yaml을 설정하세요."
+        )
+    if product is None:
+        product = _cfg.get("my_prod", "01")
+
     p = {
         "grant_type": "client_credentials",
     }
@@ -277,7 +298,9 @@ def auth(svr="prod", product=_cfg["my_prod"], url=None):
 
 # end of initialize, 토큰 재발급, 토큰 발급시 유효시간 1일
 # 프로그램 실행시 _last_auth_time에 저장하여 유효시간 체크, 유효시간 만료시 토큰 발급 처리
-def reAuth(svr="prod", product=_cfg["my_prod"]):
+def reAuth(svr="prod", product=None):
+    if product is None:
+        product = _cfg.get("my_prod", "01")
     n2 = datetime.now()
     if (n2 - _last_auth_time).seconds >= 86400:  # 유효시간 1일
         auth(svr, product)
@@ -517,7 +540,15 @@ def _getBaseHeader_ws():
     return copy.deepcopy(_base_headers_ws)
 
 
-def auth_ws(svr="prod", product=_cfg["my_prod"]):
+def auth_ws(svr="prod", product=None):
+    if not _cfg:
+        raise FileNotFoundError(
+            f"KIS 설정 파일이 없습니다: {_config_path}. "
+            "KIS 웹소켓 기능을 사용하려면 kis_devlp.yaml을 설정하세요."
+        )
+    if product is None:
+        product = _cfg.get("my_prod", "01")
+
     p = {"grant_type": "client_credentials"}
     if svr == "prod":
         ak1 = "my_app"
@@ -549,7 +580,9 @@ def auth_ws(svr="prod", product=_cfg["my_prod"]):
         print(f"[{_last_auth_time}] => get AUTH Key completed!")
 
 
-def reAuth_ws(svr="prod", product=_cfg["my_prod"]):
+def reAuth_ws(svr="prod", product=None):
+    if product is None:
+        product = _cfg.get("my_prod", "01")
     n2 = datetime.now()
     if (n2 - _last_auth_time).seconds >= 86400:
         auth_ws(svr, product)
