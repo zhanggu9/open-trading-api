@@ -7,6 +7,8 @@ BACKTEST_DIR="$ROOT_DIR/backtester"
 STRATEGY_FRONTEND_DIR="$STRATEGY_DIR/frontend"
 BACKTEST_FRONTEND_DIR="$BACKTEST_DIR/frontend"
 LEAN_PROJECTS_DIR="$BACKTEST_DIR/.lean-workspace/projects"
+BACKTESTER_URL="${NEXT_PUBLIC_BACKTESTER_URL:-http://localhost:3001/backtest}"
+STRATEGY_BUILDER_URL="${NEXT_PUBLIC_STRATEGY_BUILDER_URL:-http://localhost:3000/builder}"
 
 declare -a SERVICE_PIDS=()
 CLEANING_UP=false
@@ -131,12 +133,14 @@ if ! command -v uv >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 echo "=================================================="
 echo " Strategy Builder + Backtester"
-echo " 전략 빌더: http://localhost:3000/builder"
-echo " 백테스트:  http://localhost:3001/backtest"
+echo " 전략 빌더: $STRATEGY_BUILDER_URL"
+echo " 백테스트:  $BACKTESTER_URL"
 echo " 종료: Ctrl+C"
 echo "=================================================="
 
@@ -164,8 +168,8 @@ cleanup_project_lean_containers
 
 start_group "전략 빌더 BE :8000" "$STRATEGY_DIR" uv run python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 start_group "백테스트 BE :8002" "$BACKTEST_DIR" uv run uvicorn backend.main:app --host 127.0.0.1 --port 8002
-start_group "전략 빌더 FE :3000" "$STRATEGY_FRONTEND_DIR" env NEXT_PUBLIC_BACKTESTER_URL=http://localhost:3001/backtest npm run dev
-start_group "백테스트 FE :3001" "$BACKTEST_FRONTEND_DIR" env NEXT_PUBLIC_STRATEGY_BUILDER_URL=http://localhost:3000/builder npm run dev
+start_group "전략 빌더 FE :3000" "$STRATEGY_FRONTEND_DIR" env "NEXT_PUBLIC_BACKTESTER_URL=$BACKTESTER_URL" npm run dev
+start_group "백테스트 FE :3001" "$BACKTEST_FRONTEND_DIR" env "NEXT_PUBLIC_STRATEGY_BUILDER_URL=$STRATEGY_BUILDER_URL" npm run dev
 
 wait_for_port 8000 "전략 빌더 BE"
 wait_for_port 8002 "백테스트 BE"
