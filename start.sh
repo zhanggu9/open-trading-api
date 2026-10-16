@@ -180,7 +180,7 @@ start_group "전략 빌더 FE :3000" "$STRATEGY_FRONTEND_DIR" env "NEXT_PUBLIC_B
 start_group "백테스트 FE :3001" "$BACKTEST_FRONTEND_DIR" env "NEXT_PUBLIC_STRATEGY_BUILDER_URL=$STRATEGY_BUILDER_URL" npm run dev
 
 wait_for_http "http://127.0.0.1:8000/docs" "전략 빌더 BE"
-wait_for_http "http://127.0.0.1:8002/docs" "백테스트 BE"
+wait_for_http "http://127.0.0.1:8002/api/health" "백테스트 BE"
 wait_for_http "http://127.0.0.1:3000/builder" "전략 빌더 FE"
 wait_for_http "http://127.0.0.1:3001/backtest" "백테스트 FE"
 
