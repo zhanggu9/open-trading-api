@@ -3,6 +3,7 @@
 Lean Docker 기반 백테스트 실행.
 """
 
+import asyncio
 import logging
 from time import perf_counter
 from typing import Any, Dict, List, Optional
@@ -601,7 +602,9 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
         project.main_py.write_text(code)
 
         lean_started = perf_counter()
-        lean_run = LeanExecutor.run(project)
+        # LeanExecutor.run은 docker subprocess를 동기 실행하므로 별도 스레드에서 대기한다.
+        # 이벤트 루프를 막지 않아 모의투자/상태조회/마스터파일 API를 동시에 처리할 수 있다.
+        lean_run = await asyncio.to_thread(LeanExecutor.run, project)
         logger.info(
             f"[Timing] phase=lean_execution seconds={perf_counter() - lean_started:.3f} "
             f"success={lean_run.success}"
@@ -777,7 +780,9 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
         project.main_py.write_text(code)
 
         lean_started = perf_counter()
-        lean_run = LeanExecutor.run(project)
+        # LeanExecutor.run은 docker subprocess를 동기 실행하므로 별도 스레드에서 대기한다.
+        # 이벤트 루프를 막지 않아 모의투자/상태조회/마스터파일 API를 동시에 처리할 수 있다.
+        lean_run = await asyncio.to_thread(LeanExecutor.run, project)
         logger.info(
             f"[Timing] phase=lean_execution seconds={perf_counter() - lean_started:.3f} "
             f"success={lean_run.success}"
