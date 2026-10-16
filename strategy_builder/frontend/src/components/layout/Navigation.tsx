@@ -3,13 +3,19 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { TrendingUp, Sparkles, Play, Settings } from "lucide-react";
+import { TrendingUp, Sparkles, Play, Settings, BarChart3 } from "lucide-react";
 import { useAuth } from "@/hooks";
 import { SettingsModal } from "@/components/settings";
 
 const navItems = [
-  { href: "/builder", label: "전략 빌더", icon: Sparkles },
-  { href: "/execute", label: "전략 실행", icon: Play },
+  { href: "/builder", label: "전략 빌더", icon: Sparkles, external: false },
+  { href: "/execute", label: "전략 실행", icon: Play, external: false },
+  {
+    href: process.env.NEXT_PUBLIC_BACKTESTER_URL || "http://localhost:3001/backtest",
+    label: "백테스트",
+    icon: BarChart3,
+    external: true,
+  },
 ];
 
 export function Navigation() {
@@ -46,7 +52,7 @@ export function Navigation() {
             {/* 네비게이션 */}
             <nav className="flex items-center gap-1" aria-label="메인 네비게이션">
               {navItems.map((item) => {
-                const isActive = pathname === item.href;
+                const isActive = !item.external && pathname === item.href;
                 const Icon = item.icon;
                 return (
                   <Link

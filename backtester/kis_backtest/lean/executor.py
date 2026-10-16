@@ -197,6 +197,7 @@ class LeanExecutor:
         # Docker 명령어 구성
         cmd = [
             "docker", "run", "--rm",
+            "--label", "com.open-trading-api.component=backtester-lean",
             "-v", f"{project_path}:/Algorithm:ro",
             "-v", f"{data_path}:/Data:ro",
             "-v", f"{results_path}:/Results",

@@ -2,13 +2,14 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { TrendingUp, Settings } from "lucide-react";
+import { TrendingUp, Settings, Sparkles } from "lucide-react";
 import { SettingsModal } from "@/components/settings";
 import { useAuth } from "@/hooks";
 
 export function Header() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const { status } = useAuth();
+  const strategyBuilderUrl = process.env.NEXT_PUBLIC_STRATEGY_BUILDER_URL || "http://localhost:3000/builder";
 
   const badgeLabel = !status.authenticated
     ? "미인증"
@@ -41,6 +42,18 @@ export function Header() {
                 </p>
               </div>
             </Link>
+
+            {/* 다른 앱으로 이동 */}
+            <nav className="flex items-center gap-1" aria-label="앱 네비게이션">
+              <a
+                href={strategyBuilderUrl}
+                aria-label="전략 빌더로 이동"
+                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              >
+                <Sparkles className="w-4 h-4" aria-hidden="true" />
+                <span>전략 빌더</span>
+              </a>
+            </nav>
 
             {/* 우측: 인증 배지 + 설정 버튼 */}
             <div className="flex items-center gap-2">
