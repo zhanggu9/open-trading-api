@@ -178,8 +178,8 @@ wait_for_port 3001 "백테스트 FE"
 
 echo
 echo "모든 서비스가 실행되었습니다."
-echo "  전략 빌더: http://localhost:3000/builder"
-echo "  백테스트:  http://localhost:3001/backtest"
+echo "  전략 빌더: $STRATEGY_BUILDER_URL"
+echo "  백테스트:  $BACKTESTER_URL"
 echo "Ctrl+C를 누르면 네 서비스와 이 프로젝트의 LEAN 컨테이너가 종료됩니다."
 
 set +e
