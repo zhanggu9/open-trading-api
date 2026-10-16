@@ -197,10 +197,37 @@ export default function BacktestPage() {
   
   // 결과
   const [isRunning, setIsRunning] = useState(false);
+  const [loadingStep, setLoadingStep] = useState(0);
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tradesOpen, setTradesOpen] = useState(false);
   const [presetApplied, setPresetApplied] = useState(false);
+
+  // 백테스트 실행 중 단계 안내
+  // 백엔드에서 실시간 진행 이벤트를 보내는 구조는 아니므로, 단계/진행률은 예상 안내다.
+  const loadingMessages = [
+    "백테스트 요청 확인 중...",
+    "PostgreSQL 주가 데이터 준비 중...",
+    "벤치마크 데이터 확인 중...",
+    "LEAN 전략 코드 생성 중...",
+    "LEAN 엔진 실행 중...",
+    "결과 분석 중...",
+  ];
+
+  useEffect(() => {
+    if (!isRunning) {
+      setLoadingStep(0);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setLoadingStep((previous) =>
+        Math.min(previous + 1, loadingMessages.length - 1)
+      );
+    }, 2500);
+
+    return () => clearInterval(interval);
+  }, [isRunning]);
 
   // 데이터 로드 (strategies API가 14개 전체 포함)
   useEffect(() => {
@@ -360,18 +387,37 @@ export default function BacktestPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white dark:bg-slate-800 rounded-2xl p-8 shadow-2xl max-w-sm w-full mx-4">
             <div className="flex flex-col items-center">
+              {/* 실행 중 스피너 */}
               <div className="relative w-16 h-16 mb-6">
                 <div className="absolute inset-0 border-4 border-slate-200 dark:border-slate-700 rounded-full"></div>
                 <div className="absolute inset-0 border-4 border-kis-blue border-t-transparent rounded-full animate-spin"></div>
               </div>
-              <p className="text-lg font-semibold text-slate-900 dark:text-white mb-2">
-                백테스트 실행 중...
+
+              {/* 예상 진행 단계 */}
+              <p className="text-lg font-semibold text-slate-900 dark:text-white mb-2 text-center">
+                {loadingMessages[loadingStep]}
               </p>
-              <p className="text-xs text-slate-500 text-center">
-                PostgreSQL 데이터 준비와 LEAN 엔진 실행이 끝나면 결과가 표시됩니다.
+
+              {/* 단계별 안내 진행률: 실제 LEAN 엔진의 실시간 진행률은 아님 */}
+              <div
+                className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2 mb-3"
+                role="progressbar"
+                aria-label="백테스트 단계 안내"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.min(90, Math.round(((loadingStep + 1) / loadingMessages.length) * 100))}
+              >
+                <div
+                  className="bg-kis-blue h-2 rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min(90, ((loadingStep + 1) / loadingMessages.length) * 100)}%` }}
+                />
+              </div>
+
+              <p className="text-xs text-slate-500">
+                단계 {loadingStep + 1} / {loadingMessages.length}
               </p>
               <p className="text-xs text-slate-400 mt-4 text-center">
-                실행 중에는 이 페이지를 닫지 마세요.
+                단계 표시는 예상 안내입니다. 백테스트 완료 시 결과가 표시됩니다.
               </p>
             </div>
           </div>
