@@ -201,28 +201,33 @@ export default function BacktestPage() {
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tradesOpen, setTradesOpen] = useState(false);
+  const [presetApplied, setPresetApplied] = useState(false);
 
-  // 로딩 단계 업데이트 (시뮬레이션)
+  // 백테스트 실행 중 단계 안내
+  // 백엔드에서 실시간 진행 이벤트를 보내는 구조는 아니므로, 단계/진행률은 예상 안내다.
+  const loadingMessages = [
+    "백테스트 요청 확인 중...",
+    "PostgreSQL 주가 데이터 준비 중...",
+    "벤치마크 데이터 확인 중...",
+    "LEAN 전략 코드 생성 중...",
+    "LEAN 엔진 실행 중...",
+    "결과 분석 중...",
+  ];
+
   useEffect(() => {
     if (!isRunning) {
       setLoadingStep(0);
       return;
     }
+
     const interval = setInterval(() => {
-      setLoadingStep((prev) => (prev < 5 ? prev + 1 : prev));
+      setLoadingStep((previous) =>
+        Math.min(previous + 1, loadingMessages.length - 1)
+      );
     }, 2500);
+
     return () => clearInterval(interval);
   }, [isRunning]);
-
-  // 로딩 단계별 메시지
-  const loadingMessages = [
-    "데이터 확인 중...",
-    "KOSPI 벤치마크 다운로드 중...",
-    "종목 데이터 준비 중...",
-    "Lean 엔진 실행 중...",
-    "백테스트 진행 중...",
-    "결과 분석 중...",
-  ];
 
   // 데이터 로드 (strategies API가 14개 전체 포함)
   useEffect(() => {
@@ -241,10 +246,28 @@ export default function BacktestPage() {
     loadData();
   }, []);
 
+  // 화면에서 즉시 실행할 수 있도록, 이전에 성공한 LEAN 입력값을 채운다.
+  const loadLeanTestPreset = useCallback(() => {
+    setSelectedId("sma_crossover");
+    setImportedYaml(null);
+    setSelectedStocks(["000020"]);
+    setStartDate("2025-01-02");
+    setEndDate("2026-10-14");
+    setInitialCapital(100_000_000);
+    setCommissionRate(0.015);
+    setTaxRate(0.2);
+    setSlippage(0.1);
+    setTradesOpen(false);
+    setResult(null);
+    setError(null);
+    setPresetApplied(true);
+  }, []);
+
   // Import 핸들러
   const handleImport = useCallback((file: File, content: string) => {
     setImportedYaml(content);
     setSelectedId(null);
+    setPresetApplied(false);
   }, []);
 
   // 백테스트 실행
@@ -364,33 +387,37 @@ export default function BacktestPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white dark:bg-slate-800 rounded-2xl p-8 shadow-2xl max-w-sm w-full mx-4">
             <div className="flex flex-col items-center">
-              {/* 스피너 */}
+              {/* 실행 중 스피너 */}
               <div className="relative w-16 h-16 mb-6">
                 <div className="absolute inset-0 border-4 border-slate-200 dark:border-slate-700 rounded-full"></div>
                 <div className="absolute inset-0 border-4 border-kis-blue border-t-transparent rounded-full animate-spin"></div>
               </div>
 
-              {/* 현재 단계 */}
-              <p className="text-lg font-semibold text-slate-900 dark:text-white mb-2">
+              {/* 예상 진행 단계 */}
+              <p className="text-lg font-semibold text-slate-900 dark:text-white mb-2 text-center">
                 {loadingMessages[loadingStep]}
               </p>
 
-              {/* 진행률 바 */}
-              <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2 mb-4">
+              {/* 단계별 안내 진행률: 실제 LEAN 엔진의 실시간 진행률은 아님 */}
+              <div
+                className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2 mb-3"
+                role="progressbar"
+                aria-label="백테스트 단계 안내"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.min(90, Math.round(((loadingStep + 1) / loadingMessages.length) * 100))}
+              >
                 <div
                   className="bg-kis-blue h-2 rounded-full transition-all duration-500"
-                  style={{ width: `${((loadingStep + 1) / loadingMessages.length) * 100}%` }}
-                ></div>
+                  style={{ width: `${Math.min(90, ((loadingStep + 1) / loadingMessages.length) * 100)}%` }}
+                />
               </div>
 
-              {/* 단계 표시 */}
               <p className="text-xs text-slate-500">
-                {loadingStep + 1} / {loadingMessages.length}
+                단계 {loadingStep + 1} / {loadingMessages.length}
               </p>
-
-              {/* 안내 메시지 */}
               <p className="text-xs text-slate-400 mt-4 text-center">
-                처음 실행 시 데이터 다운로드로 시간이 걸릴 수 있습니다
+                단계 표시는 예상 안내입니다. 백테스트 완료 시 결과가 표시됩니다.
               </p>
             </div>
           </div>
@@ -416,12 +443,26 @@ export default function BacktestPage() {
       )}
 
       {/* 헤더 */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-slate-900 dark:text-white">백테스트</h1>
-        <p className="text-slate-600 dark:text-slate-400">
-          YAML 파일을 드롭하거나 전략을 선택하여 백테스트를 실행하세요
-        </p>
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">백테스트</h1>
+          <p className="text-slate-600 dark:text-slate-400">
+            YAML 파일을 드롭하거나 전략을 선택하여 백테스트를 실행하세요
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={loadLeanTestPreset}
+          className="px-4 py-2 rounded-lg border border-kis-blue text-kis-blue hover:bg-kis-blue/5 text-sm font-semibold transition-colors"
+        >
+          LEAN 테스트 설정 불러오기
+        </button>
       </div>
+      {presetApplied && (
+        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-200">
+          테스트 설정이 적용되었습니다. 종목 000020, SMA 크로스오버, 2025-01-02~2026-10-14 기간으로 백테스트 실행 버튼을 누르세요.
+        </div>
+      )}
 
       {/* 2컬럼 레이아웃 */}
       <div className="grid lg:grid-cols-3 gap-6">
@@ -633,7 +674,7 @@ export default function BacktestPage() {
                     <div className="mt-2 text-xs text-red-500/80 space-y-1">
                       <p>• 종목 코드가 올바른지 확인하세요 (예: 005930)</p>
                       <p>• 백테스트 기간에 거래일이 포함되어 있는지 확인하세요</p>
-                      <p>• KIS API 환경설정(.env)을 확인하세요</p>
+                      <p>• backtester/.env의 DATABASE_URL 및 PostgreSQL 테이블/컬럼 설정을 확인하세요</p>
                     </div>
                   )}
                   {error.includes("지표") && (

@@ -1,20 +1,20 @@
 #홈페이지에서 API서비스 신청시 받은 Appkey, Appsecret 값 설정
 #실전투자
-my_app: "앱키"
-my_sec: "앱키 시크릿"
+my_app: "PSKMeDxleQmyQzxLQNozMERCmJ6Pw7KTm88Z"
+my_sec: "gMRJC1n+Ix1JC38vBpmxpV2B+LGDh/Vkze/i1tppn22XEHefPi9+dtYIApBYFkUoubMwKEc0pgCzKWzzaIfj8gXHCMO5CQ6N3a8/8HH1Z9uQSQRcZj6hI3KNKO0iVIxtI4OZLnrpwy0vJINk1muxeuT+GY4ZEtjLhkpD7tflyzpnhOAfAd4="
 
 #모의투자
-paper_app: "모의투자 앱키"
-paper_sec: "모의투자 앱키 시크릿"
+paper_app: "PSZQedAoZkiIJlqcJgXRrugW2BYCmN2VLyIJ"
+paper_sec: "M6qFFza3zpaMCfutxXfTgLvEkzUSikOl+txN4tMBJamsi/p8RYqUF5USAg29HUWNwghz45v/1z2OYmbPKcUE2pfoPhYviNh42BqjNI4DXt/OfQqRqlnEXbe1pxxwdFchrdZIED/2+iGohXx2rincpka1mslPuimH+nbkKwvidsi++84idgE="
 
 # HTS ID
-my_htsid: "사용자 HTS ID"
+my_htsid: "870216"
 
 #계좌번호 앞 8자리
-my_acct_stock: "증권계좌 8자리"
+my_acct_stock: "74432010"
 my_acct_future: "선물옵션계좌 8자리"
-my_paper_stock: "모의투자 증권계좌 8자리"
-my_paper_future: "모의투자 선물옵션계좌 8자리"
+my_paper_stock: "50214513"
+my_paper_future: "60049961"
 
 #계좌번호 뒤 2자리
 my_prod: "01" # 종합계좌

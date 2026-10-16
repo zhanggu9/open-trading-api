@@ -94,13 +94,22 @@ def append_to_symbol_properties(symbols: list[dict]) -> int:
                     code = line.split(",")[1]
                     existing_codes.add(code)
     
-    # 새 종목만 추가
-    new_symbols = [s for s in symbols if s["code"] not in existing_codes]
-    
+    # 새 종목만 추가한다.
+    # 마스터 파일 안에 같은 종목코드가 여러 번 있어도 한 번만 기록하도록
+    # existing_codes를 루프 안에서 즉시 갱신한다.
+    new_symbols = []
+    seen_codes = set(existing_codes)
+    for sym in symbols:
+        code = sym["code"]
+        if code in seen_codes:
+            continue
+        new_symbols.append(sym)
+        seen_codes.add(code)
+
     if not new_symbols:
         print(f"  추가할 새 종목 없음 (기존 {len(existing_codes)}개)")
         return 0
-    
+
     # 파일에 추가
     with open(SYMBOL_PROPS_FILE, "a", encoding="utf-8") as f:
         for sym in new_symbols:
@@ -109,7 +118,7 @@ def append_to_symbol_properties(symbols: list[dict]) -> int:
             #         price_magnifier,strike_multiplier
             line = f'krx,{sym["code"]},equity,{sym["name"]},KRW,1,1,1,{sym["code"]},1,1,1\n'
             f.write(line)
-    
+
     return len(new_symbols)
 
 
