@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "KIS Backtest Framework",
-  description: "KIS Backtest Framework",
+  title: "LIMSON Backtest Framework",
+  description: "LIMSON Backtest Framework",
 };
 
 export default function RootLayout({

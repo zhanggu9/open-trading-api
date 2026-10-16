@@ -35,13 +35,13 @@ export function Navigation() {
         <div className="w-full px-4">
           <div className="flex items-center justify-between h-16">
             {/* 로고 */}
-            <Link href="/" className="flex items-center gap-3 focus-ring rounded-lg" aria-label="KIS Strategy Builder 홈">
+            <Link href="/" className="flex items-center gap-3 focus-ring rounded-lg" aria-label="LIMSON Strategy Builder 홈">
               <div className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center">
                 <TrendingUp className="w-6 h-6 text-white" aria-hidden="true" />
               </div>
               <div className="hidden sm:block">
                 <h1 className="font-bold text-lg text-slate-900 dark:text-slate-100">
-                  KIS Strategy Builder
+                  LIMSON Strategy Builder
                 </h1>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                   비주얼 전략 빌더
@@ -49,6 +49,7 @@ export function Navigation() {
               </div>
             </Link>
 
+            <div className="ml-auto flex items-center gap-4">
             {/* 네비게이션 */}
             <nav className="flex items-center gap-1" aria-label="메인 네비게이션">
               {navItems.map((item) => {
@@ -94,6 +95,7 @@ export function Navigation() {
               >
                 <Settings className="w-5 h-5 text-slate-600 dark:text-slate-400" aria-hidden="true" />
               </button>
+            </div>
             </div>
           </div>
         </div>

@@ -22,7 +22,7 @@ const notoSansKR = Noto_Sans_KR({
 });
 
 export const metadata: Metadata = {
-  title: "KIS Strategy Builder - 전략 빌더",
+  title: "LIMSON Strategy Builder - 전략 빌더",
   description: "한국투자증권 API 기반 퀀트 전략 프레임워크",
 };
 
