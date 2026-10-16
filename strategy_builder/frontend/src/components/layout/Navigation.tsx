@@ -8,14 +8,8 @@ import { useAuth } from "@/hooks";
 import { SettingsModal } from "@/components/settings";
 
 const navItems = [
-  { href: "/builder", label: "전략 빌더", icon: Sparkles, external: false },
-  { href: "/execute", label: "전략 실행", icon: Play, external: false },
-  {
-    href: process.env.NEXT_PUBLIC_BACKTESTER_URL || "http://localhost:3001/backtest",
-    label: "백테스트",
-    icon: BarChart3,
-    external: true,
-  },
+  { href: "/builder", label: "전략 빌더", icon: Sparkles },
+  { href: "/execute", label: "전략 실행", icon: Play },
 ];
 
 export function Navigation() {
@@ -49,11 +43,10 @@ export function Navigation() {
               </div>
             </Link>
 
-            <div className="ml-auto flex items-center gap-4">
-            {/* 네비게이션 */}
-            <nav className="flex items-center gap-1" aria-label="메인 네비게이션">
+            {/* 내부 페이지 메뉴는 헤더의 정중앙에 유지 */}
+            <nav className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1" aria-label="메인 네비게이션">
               {navItems.map((item) => {
-                const isActive = !item.external && pathname === item.href;
+                const isActive = pathname === item.href;
                 const Icon = item.icon;
                 return (
                   <Link
@@ -74,8 +67,17 @@ export function Navigation() {
               })}
             </nav>
 
-            {/* 우측 영역: 모드 표시 + 설정 톱니바퀴 */}
-            <div className="flex items-center gap-2">
+            {/* 우측 영역: 다른 앱 이동 + 모드 표시 + 설정 */}
+            <div className="ml-auto flex items-center gap-3">
+              <a
+                href={process.env.NEXT_PUBLIC_BACKTESTER_URL || "http://localhost:3001/backtest"}
+                aria-label="백테스트로 이동"
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              >
+                <BarChart3 className="w-4 h-4" aria-hidden="true" />
+                <span className="hidden sm:inline">백테스트</span>
+              </a>
+              <div className="flex items-center gap-2">
               {/* 현재 모드 배지 - 인증된 경우에만 표시 */}
               {status.authenticated && (
                 <span
@@ -95,7 +97,7 @@ export function Navigation() {
               >
                 <Settings className="w-5 h-5 text-slate-600 dark:text-slate-400" aria-hidden="true" />
               </button>
-            </div>
+              </div>
             </div>
           </div>
         </div>
