@@ -99,20 +99,24 @@ start_group() {
   SERVICE_PIDS+=("$pid")
 }
 
-wait_for_port() {
-  local port="$1"
+wait_for_http() {
+  local url="$1"
   local label="$2"
-  local attempt
+  local attempt status
 
-  for attempt in {1..45}; do
-    if lsof -tiTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
-      echo "[$label] 준비 완료: http://localhost:$port"
-      return 0
-    fi
+  # lsof의 포트 감지 결과 대신 실제 HTTP 응답으로 서비스 준비 여부를 판단한다.
+  for attempt in {1..60}; do
+    status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 3 "$url" 2>/dev/null || true)"
+    case "$status" in
+      2??|3??)
+        echo "[$label] 준비 완료: $url (HTTP $status)"
+        return 0
+        ;;
+    esac
     sleep 1
   done
 
-  echo "[$label] 포트 $port가 45초 안에 열리지 않았습니다." >&2
+  echo "[$label] 60초 안에 HTTP 응답을 받지 못했습니다: $url (마지막 상태: ${status:-연결 실패})" >&2
   return 1
 }
 
@@ -130,6 +134,10 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
 fi
 if ! command -v uv >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
   echo "uv와 Node.js/npm이 WSL Ubuntu 안에 설치되어 있어야 합니다." >&2
+  exit 1
+fi
+if ! command -v curl >/dev/null 2>&1; then
+  echo "curl이 필요합니다. WSL에서 'sudo apt install curl'을 실행하세요." >&2
   exit 1
 fi
 
@@ -171,10 +179,10 @@ start_group "백테스트 BE :8002" "$BACKTEST_DIR" uv run uvicorn backend.main:
 start_group "전략 빌더 FE :3000" "$STRATEGY_FRONTEND_DIR" env "NEXT_PUBLIC_BACKTESTER_URL=$BACKTESTER_URL" npm run dev
 start_group "백테스트 FE :3001" "$BACKTEST_FRONTEND_DIR" env "NEXT_PUBLIC_STRATEGY_BUILDER_URL=$STRATEGY_BUILDER_URL" npm run dev
 
-wait_for_port 8000 "전략 빌더 BE"
-wait_for_port 8002 "백테스트 BE"
-wait_for_port 3000 "전략 빌더 FE"
-wait_for_port 3001 "백테스트 FE"
+wait_for_http "http://127.0.0.1:8000/docs" "전략 빌더 BE"
+wait_for_http "http://127.0.0.1:8002/docs" "백테스트 BE"
+wait_for_http "http://127.0.0.1:3000/builder" "전략 빌더 FE"
+wait_for_http "http://127.0.0.1:3001/backtest" "백테스트 FE"
 
 echo
 echo "모든 서비스가 실행되었습니다."
