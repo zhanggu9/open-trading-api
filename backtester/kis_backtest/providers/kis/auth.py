@@ -126,7 +126,7 @@ class KISAuth:
     기존 인터페이스를 유지하면서 내부적으로 kis_auth.py를 사용합니다.
     
     사용법:
-        # 방법 1: 환경변수 대신 ~/KIS/config/kis_devlp.yaml 사용
+        # 방법 1: 저장소 루트의 kis_devlp.yaml 사용
         auth = KISAuth.from_env()
         
         # 방법 2: 직접 지정
@@ -210,13 +210,13 @@ class KISAuth:
 
     @classmethod
     def from_env(cls, mode: Optional[str] = None) -> "KISAuth":
-        """~/KIS/config/kis_devlp.yaml 기반 초기화
+        """저장소 루트의 kis_devlp.yaml 기반 초기화
 
         Args:
             mode: "live" 또는 "paper". None이면 JWT jti로 자동 감지, 실패 시 "paper" fallback
 
         설정 파일:
-            ~/KIS/config/kis_devlp.yaml
+            저장소 루트/kis_devlp.yaml
             - my_app, my_sec, my_acct_stock (실전)
             - paper_app, paper_sec, my_paper_stock (모의)
 
@@ -247,7 +247,7 @@ class KISAuth:
         # 필수값 검증
         if not app_key or not app_secret or not account_no:
             raise ValueError(
-                f"~/KIS/config/kis_devlp.yaml에 필수 설정이 없습니다.\n"
+                f"{ka.KIS_CONFIG_PATH}에 필수 설정이 없습니다.\n"
                 f"모의투자: paper_app, paper_sec, my_paper_stock\n"
                 f"실전투자: my_app, my_sec, my_acct_stock"
             )

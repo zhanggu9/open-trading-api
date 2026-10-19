@@ -7,6 +7,7 @@ import copy
 import json
 import logging
 import os
+from pathlib import Path
 import time
 from base64 import b64decode
 from collections import namedtuple
@@ -35,6 +36,8 @@ def clearConsole():
     return os.system("cls" if os.name in ("nt", "dos") else "clear")
 
 key_bytes = 32
+# 설정은 프로젝트 루트에서 읽고, 토큰 파일은 저장소 밖에 둔다.
+KIS_CONFIG_PATH = Path(__file__).resolve().parents[1] / "kis_devlp.yaml"
 config_root = os.path.join(os.path.expanduser("~"), "KIS", "config")
 # config_root = "$HOME/KIS/config/"  # 토큰 파일이 저장될 폴더, 제3자가 찾기 어렵도록 경로 설정하시기 바랍니다.
 # token_tmp = config_root + 'KIS000000'  # 토큰 로컬저장시 파일 이름 지정, 파일이름을 토큰값이 유추가능한 파일명은 삼가바랍니다.
@@ -52,7 +55,7 @@ with open(token_tmp, "a", encoding="utf-8"):
 
 # KIS 설정은 선택 사항으로 취급한다.
 # PostgreSQL 기반 백테스트는 KIS 인증 설정 없이도 서버를 시작할 수 있어야 한다.
-_config_path = os.path.join(config_root, "kis_devlp.yaml")
+_config_path = KIS_CONFIG_PATH
 try:
     with open(_config_path, encoding="UTF-8") as f:
         _cfg = yaml.safe_load(f) or {}

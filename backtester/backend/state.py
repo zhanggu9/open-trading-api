@@ -180,9 +180,7 @@ class TradingState:
         ka._cfg는 모듈 임포트 시 한 번만 로드되므로,
         yaml을 수정한 뒤 인증 시도 시 이 메서드로 재로드해야 반영된다.
         """
-        config_path = os.path.join(
-            os.path.expanduser("~"), "KIS", "config", "kis_devlp.yaml"
-        )
+        config_path = ka.KIS_CONFIG_PATH
         try:
             with open(config_path, encoding="UTF-8") as f:
                 new_cfg = yaml.safe_load(f)
