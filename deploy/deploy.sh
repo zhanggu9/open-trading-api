@@ -5,25 +5,28 @@
 #
 # 환경변수(모두 선택):
 #   DEPLOY_HOST=13.209.87.155        서버 주소
-#   WEB_PORT=8010                    웹 공개 포트
+#   WEB_PORT=8011                    웹 공개 포트 (8010은 서버의 pg-stock-api가 사용)
+#   FRONTEND_BUILD=local             local: 이 PC에서 next build 후 결과만 업로드 / server: 서버에서 빌드
 #   KEY_DIR=/home/l/stock-coin-trade SSH 키(*.pem, *.key)를 찾을 폴더
 #   SSH_KEY=/path/to/key.pem         키 파일을 직접 지정
 #   SSH_USER=ubuntu                  지정하지 않으면 ubuntu → ec2-user → root 순으로 시도
-#   SSH_PORT=22                      지정하지 않으면 22 → 8010 순으로 시도
+#   SSH_PORT=22                      SSH 포트 (기본 22)
 #   REMOTE_DIR=open-trading-api      서버 홈 디렉터리 기준 설치 위치
-# 서버 스크립트로 전달되는 값: DATABASE_URL, BASIC_AUTH, BASIC_AUTH_USER, BASIC_AUTH_PASSWORD,
+# 서버 스크립트로 전달되는 값: DATABASE_URL, BACKTEST_MODE, BASIC_AUTH, BASIC_AUTH_USER, BASIC_AUTH_PASSWORD,
 #   SKIP_LEAN_PULL, FORCE_LEAN_PULL, LEAN_MIN_FREE_GB, CREATE_SWAP (설명은 deploy/server_setup.sh)
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 DEPLOY_HOST="${DEPLOY_HOST:-13.209.87.155}"
-WEB_PORT="${WEB_PORT:-8010}"
+WEB_PORT="${WEB_PORT:-8011}"
+FRONTEND_BUILD="${FRONTEND_BUILD:-local}"
 KEY_DIR="${KEY_DIR:-/home/l/stock-coin-trade}"
 REMOTE_DIR="${REMOTE_DIR:-open-trading-api}"
 LOG_FILE="$ROOT_DIR/deploy/last-deploy.log"
-PASS_THROUGH_VARS=(DATABASE_URL BASIC_AUTH BASIC_AUTH_USER BASIC_AUTH_PASSWORD SKIP_LEAN_PULL FORCE_LEAN_PULL LEAN_MIN_FREE_GB CREATE_SWAP)
+PASS_THROUGH_VARS=(DATABASE_URL BACKTEST_MODE BASIC_AUTH BASIC_AUTH_USER BASIC_AUTH_PASSWORD SKIP_LEAN_PULL FORCE_LEAN_PULL LEAN_MIN_FREE_GB CREATE_SWAP)
 
 log() { printf '\n\033[1;34m[deploy]\033[0m %s\n' "$*"; }
+info() { printf '        %s\n' "$*"; }
 warn() { printf '\033[1;33m[경고]\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31m[실패]\033[0m %s\n' "$*" >&2; exit 1; }
 
@@ -70,7 +73,7 @@ connect_probe() {
   local -a keys ports users
   mapfile -t keys < <(find_keys)
   [[ ${#keys[@]} -gt 0 ]] || exit 1  # find_keys가 이유를 이미 출력했다
-  read -r -a ports <<<"${SSH_PORT:-22 8010}"
+  read -r -a ports <<<"${SSH_PORT:-22}"
   read -r -a users <<<"${SSH_USER:-ubuntu ec2-user root}"
 
   local key port user i=0 errors="$WORK_DIR/ssh-errors.txt"
@@ -108,6 +111,44 @@ list_files() {  # git이 추적하는 파일(커밋 안 된 수정 포함)만 �
   git -C "$ROOT_DIR" ls-files -z | while IFS= read -r -d '' path; do
     [[ -e "$ROOT_DIR/$path" ]] && printf '%s\0' "$path"
   done
+}
+
+# 작은 서버(t3.micro 등)에서 next build는 메모리를 다 써서 같은 서버의 DB까지 위험해진다.
+# 이 PC에서 git 추적 파일만 임시 폴더에 복사해 빌드하고, 결과(.next)만 서버로 올린다.
+build_frontends_locally() {
+  [[ "$FRONTEND_BUILD" == "local" ]] || return 0
+  command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 \
+    || die "로컬 빌드에 Node.js/npm이 필요합니다 (FRONTEND_BUILD=server 로 서버에서 빌드할 수 있음)."
+  node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>20||(a===20&&b>=9)?0:1)' \
+    || die "Next.js 16 빌드에는 Node.js 20.9 이상이 필요합니다 (현재 $(node -v))."
+  log "프론트엔드 로컬 빌드 (Node $(node -v)) → 결과만 업로드"
+  local app build build_log
+  mkdir -p "$WORK_DIR/prebuilt/.deploy-prebuilt"
+  for app in strategy_builder backtester; do
+    build="$WORK_DIR/build/$app"
+    build_log="$WORK_DIR/build-$app.log"
+    mkdir -p "$build"
+    git -C "$ROOT_DIR" ls-files -z -- "$app/frontend" | (cd "$ROOT_DIR" && tar --null -T - -cf -) \
+      | tar -xf - -C "$build" --strip-components=2
+    cp "$ROOT_DIR/deploy/frontend-env/$app.env" "$build/.env.production.local"
+    info "$app: npm ci + next build"
+    if ! (cd "$build" && npm ci --no-audit --no-fund --loglevel=error --prefer-offline \
+          && NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 node node_modules/next/dist/bin/next build) >"$build_log" 2>&1; then
+      tail -n 40 "$build_log" >&2
+      die "$app 프론트엔드 빌드 실패 (FRONTEND_BUILD=server 로 서버 빌드를 시도할 수 있음)"
+    fi
+    tar -C "$build" --exclude=.next/cache -czf "$WORK_DIR/prebuilt/.deploy-prebuilt/$app.tar.gz" .next
+    info "$app: 완료 ($(du -h "$WORK_DIR/prebuilt/.deploy-prebuilt/$app.tar.gz" | cut -f1))"
+  done
+}
+
+upload_prebuilt() {
+  [[ "$FRONTEND_BUILD" == "local" ]] || return 0
+  log "로컬 빌드 결과 전송 → ~/$REMOTE_DIR/.deploy-prebuilt"
+  local remote_dir_q
+  remote_dir_q="$(printf '%q' "$REMOTE_DIR")"
+  tar -C "$WORK_DIR/prebuilt" -czf - .deploy-prebuilt \
+    | ssh_run "rm -rf $remote_dir_q/.deploy-prebuilt && tar -xzf - -C $remote_dir_q"
 }
 
 upload_source() {
@@ -148,7 +189,7 @@ check_public_access() {
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "http://$DEPLOY_HOST:$WEB_PORT/builder" || true)"
   case "$code" in
     200|401)
-      printf '  OK (HTTP %s) — 브라우저에서 http://%s:%s 접속\n' "$code" "$DEPLOY_HOST" "$WEB_PORT"
+      printf '  OK (HTTP %s) — 브라우저에서 http://%s:%s/builder 접속\n' "$code" "$DEPLOY_HOST" "$WEB_PORT"
       ;;
     *)
       warn "외부에서 $WEB_PORT 포트에 접속하지 못했습니다 (HTTP ${code:-000})."
@@ -163,7 +204,9 @@ main() {
   if [[ "$SSH_PORT_FOUND" == "$WEB_PORT" ]]; then
     die "SSH가 $WEB_PORT 포트로 연결되었습니다. 웹 포트와 겹치므로 WEB_PORT=다른포트 로 지정해 다시 실행하세요."
   fi
+  build_frontends_locally
   upload_source
+  upload_prebuilt
   run_server_setup
   check_public_access
 }

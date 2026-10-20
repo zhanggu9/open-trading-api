@@ -4,11 +4,15 @@
 #
 #   bash ~/open-trading-api/deploy/server_setup.sh
 #
-# 순서: 시스템 패키지(nginx, Docker) → Node.js/uv → Python 의존성 → 프론트엔드 빌드
+# 순서: 시스템 패키지(nginx, Docker) → Node.js/uv → Python 의존성 → 프론트엔드 빌드(또는 로컬 빌드 결과 적용)
 #       → PostgreSQL 연결 확인 → LEAN 이미지/데이터 → systemd 서비스 → nginx(:WEB_PORT) → 헬스체크
 #
 # 환경변수(모두 선택):
-#   WEB_PORT=8010              외부 공개 포트
+#   WEB_PORT=8011              외부 공개 포트
+#   BACKTEST_MODE=server|local server: 백테스트 API+LEAN을 이 서버에서 실행
+#                              local : 백테스트 API+LEAN은 로컬 PC(deploy/local_backtest_worker.sh)에서 실행하고
+#                                      SSH 역터널이 이 서버 127.0.0.1:8002에 붙는다 (디스크/메모리가 작은 서버용)
+#                              비우면 지난 배포 값(/etc/open-trading-api/deploy.conf), 처음이면 server
 #   PUBLIC_HOST=13.209.87.155  안내 메시지에 표시할 주소
 #   DATABASE_URL=...           비우면 서버의 PostgreSQL(Docker 컨테이너/로컬 포트)을 자동으로 찾는다
 #   BASIC_AUTH=on|off          웹 접속 Basic 인증 (기본 on — 주문/계좌 API가 함께 노출되기 때문)
@@ -31,7 +35,8 @@ fi
 
 APP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 DEPLOY_DIR="$APP_DIR/deploy"
-WEB_PORT="${WEB_PORT:-8010}"
+WEB_PORT="${WEB_PORT:-8011}"
+BACKTEST_MODE="${BACKTEST_MODE:-}"
 PUBLIC_HOST="${PUBLIC_HOST:-}"
 BASIC_AUTH="${BASIC_AUTH:-on}"
 BASIC_AUTH_USER="${BASIC_AUTH_USER:-admin}"
@@ -45,6 +50,8 @@ SERVICE_USER="$(id -un)"
 SERVICE_GROUP="$(id -gn)"
 CONFIG_DIR="/etc/open-trading-api"
 APP_ENV_FILE="$CONFIG_DIR/app.env"
+DEPLOY_CONF="$CONFIG_DIR/deploy.conf"
+PREBUILT_DIR="$APP_DIR/.deploy-prebuilt"
 NGINX_CONF="/etc/nginx/conf.d/open-trading-api.conf"
 HTPASSWD_FILE="/etc/nginx/open-trading-api.htpasswd"
 CREDENTIALS_FILE="$HOME/.open-trading-api-web-credentials"
@@ -139,6 +146,24 @@ install_system_packages() {
     fi
   fi
   [[ -x "$(nginx_bin)" ]] || die "nginx 설치에 실패했습니다."
+}
+
+resolve_backtest_mode() {
+  local saved
+  saved="$(as_root sed -n 's/^BACKTEST_MODE=//p' "$DEPLOY_CONF" 2>/dev/null | tail -n 1 || true)"
+  BACKTEST_MODE="${BACKTEST_MODE:-${saved:-server}}"
+  case "$BACKTEST_MODE" in
+    server|local) ;;
+    *) die "BACKTEST_MODE는 server 또는 local 이어야 합니다: $BACKTEST_MODE" ;;
+  esac
+  as_root mkdir -p "$CONFIG_DIR"
+  echo "BACKTEST_MODE=$BACKTEST_MODE" | as_root tee "$DEPLOY_CONF" >/dev/null
+  if [[ "$BACKTEST_MODE" == "local" ]]; then
+    SERVICES=(open-trading-strategy-api open-trading-strategy-web open-trading-backtest-web)
+    info "백테스트 실행 위치: 로컬 PC 워커 (SSH 역터널 → 127.0.0.1:8002)"
+  else
+    info "백테스트 실행 위치: 이 서버"
+  fi
 }
 
 ensure_docker() {
@@ -266,21 +291,15 @@ install_python_deps() {
 }
 
 write_frontend_env() {
-  # 단일 포트 배포용 경로. nginx 라우팅(deploy/nginx)과 짝을 이룬다.
-  cat > "$APP_DIR/strategy_builder/frontend/.env.production.local" <<'EOF'
-# deploy/server_setup.sh가 생성 — 단일 포트(nginx) 배포용
-NEXT_PUBLIC_BACKTESTER_URL=/backtest
-EOF
-  cat > "$APP_DIR/backtester/frontend/.env.production.local" <<'EOF'
-# deploy/server_setup.sh가 생성 — 단일 포트(nginx) 배포용
-NEXT_PUBLIC_API_URL=/backtest
-NEXT_PUBLIC_STRATEGY_BUILDER_URL=/builder
-ASSET_PREFIX=/backtest-static
-EOF
+  # 단일 포트 배포용 경로 (deploy/frontend-env). nginx 라우팅(deploy/nginx)과 짝을 이룬다.
+  local app
+  for app in strategy_builder backtester; do
+    cp "$DEPLOY_DIR/frontend-env/$app.env" "$APP_DIR/$app/frontend/.env.production.local"
+  done
 }
 
 build_frontends() {
-  log "프론트엔드 빌드 (npm ci + next build)"
+  log "프론트엔드 준비 (npm ci + 로컬 빌드 결과 적용 또는 next build)"
   write_frontend_env
   # 빌드 중에는 .next가 지워지므로 실행 중인 웹 서비스를 먼저 멈춘다.
   local svc
@@ -288,17 +307,27 @@ build_frontends() {
     as_root systemctl stop "$svc" >/dev/null 2>&1 || true
   done
 
-  local dir lock_hash stamp
-  for dir in "$APP_DIR/strategy_builder/frontend" "$APP_DIR/backtester/frontend"; do
-    info "${dir#"$APP_DIR"/}"
+  local app dir lock_hash stamp prebuilt
+  for app in strategy_builder backtester; do
+    dir="$APP_DIR/$app/frontend"
+    info "$app/frontend"
     lock_hash="$(sha256sum "$dir/package-lock.json" | cut -d' ' -f1)"
     stamp="$dir/node_modules/.deploy-lock-sha256"
     if [[ ! -f "$stamp" || "$(cat "$stamp")" != "$lock_hash" ]]; then
       (cd "$dir" && PATH="$NODE_BIN_DIR:$PATH" "$NODE_BIN_DIR/npm" ci --no-audit --no-fund --loglevel=error)
       echo "$lock_hash" > "$stamp"
     fi
-    (cd "$dir" && PATH="$NODE_BIN_DIR:$PATH" NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 \
-      "$NODE_BIN_DIR/node" node_modules/next/dist/bin/next build)
+    # deploy.sh가 로컬 PC에서 빌드해 올린 .next가 있으면 그대로 쓴다 (작은 서버에서 next build는 메모리 부족 위험).
+    prebuilt="$PREBUILT_DIR/$app.tar.gz"
+    if [[ -f "$prebuilt" ]]; then
+      rm -rf "$dir/.next"
+      tar -xzf "$prebuilt" -C "$dir"
+      rm -f "$prebuilt"
+      info "  로컬 PC에서 빌드한 결과 적용 (BUILD_ID $(cat "$dir/.next/BUILD_ID" 2>/dev/null || echo '?'))"
+    else
+      (cd "$dir" && PATH="$NODE_BIN_DIR:$PATH" NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 \
+        "$NODE_BIN_DIR/node" node_modules/next/dist/bin/next build)
+    fi
   done
 }
 
@@ -435,6 +464,11 @@ configure_database() {
 # ---------------------------------------------------------------------------
 setup_lean() {
   log "LEAN 백테스트 엔진 준비"
+  if [[ "$BACKTEST_MODE" == "local" ]]; then
+    LEAN_STATUS="로컬 PC 워커에서 실행 (로컬에서 ./deploy/local_backtest_worker.sh install)"
+    info "BACKTEST_MODE=local — 서버에는 LEAN을 설치하지 않습니다."
+    return 0
+  fi
   if ! as_root docker info >/dev/null 2>&1; then
     LEAN_STATUS="Docker 없음 — 백테스트 불가"
     return 0
@@ -500,6 +534,15 @@ install_services() {
   for svc in "${SERVICES[@]}"; do
     render "" "$DEPLOY_DIR/systemd/$svc.service" | as_root tee "/etc/systemd/system/$svc.service" >/dev/null
   done
+  if [[ "$BACKTEST_MODE" == "local" && -f /etc/systemd/system/open-trading-backtest-api.service ]]; then
+    # 로컬 워커의 SSH 역터널이 127.0.0.1:8002를 써야 하므로 서버의 백테스트 API는 내린다.
+    as_root systemctl disable --now open-trading-backtest-api >/dev/null 2>&1 || true
+    as_root rm -f /etc/systemd/system/open-trading-backtest-api.service
+    info "서버의 open-trading-backtest-api 서비스를 내렸습니다 (BACKTEST_MODE=local)."
+  fi
+  if [[ "$BACKTEST_MODE" == "server" ]] && port_in_use 8002 && ! as_root systemctl is-active --quiet open-trading-backtest-api; then
+    warn "127.0.0.1:8002를 다른 프로그램(로컬 워커의 SSH 터널일 수 있음)이 쓰고 있습니다. 로컬 PC에서 './deploy/local_backtest_worker.sh uninstall' 하세요."
+  fi
   as_root systemctl daemon-reload
   as_root systemctl enable "${SERVICES[@]}" >/dev/null 2>&1
   as_root systemctl restart "${SERVICES[@]}"
@@ -590,10 +633,10 @@ wait_upstreams() {  # 막 재시작한 서비스들이 직접 응답할 때까�
   local deadline=$((SECONDS + 120)) pending url
   local -a urls=(
     "http://127.0.0.1:8000/api/health"
-    "http://127.0.0.1:8002/api/health"
     "http://127.0.0.1:3000/builder"
     "http://127.0.0.1:3001/backtest"
   )
+  [[ "$BACKTEST_MODE" == "local" ]] || urls+=("http://127.0.0.1:8002/api/health")
   while :; do
     pending=()
     for url in "${urls[@]}"; do
@@ -612,7 +655,9 @@ collect_symbol_masters() {
   # 종목명 조회/검색은 .master/ CSV를 쓴다. 새 서버에는 없으므로 처음 한 번 KIS 공개 마스터파일을 받아 둔다.
   log "종목 마스터(코스피/코스닥) 확인"
   local port total result
-  for port in 8000 8002; do
+  local -a ports=(8000)
+  [[ "$BACKTEST_MODE" == "local" ]] || ports+=(8002)
+  for port in "${ports[@]}"; do
     total="$(curl -s --max-time 10 "http://127.0.0.1:$port/api/symbols/status" 2>/dev/null \
       | sed -nE 's/.*"total_count":([0-9]+).*/\1/p' || true)"
     if [[ "${total:-0}" -gt 0 ]]; then
@@ -643,8 +688,18 @@ check_routes() {  # nginx 경유로 네 서비스와 정적 자원 라우팅을 
   local base="http://127.0.0.1:$WEB_PORT" asset
   check_url "전략 빌더 API" "$base/api/health"
   check_url "전략 빌더 전략 목록" "$base/api/strategies"
-  check_url "백테스트 API" "$base/backtest/api/health"
-  check_url "백테스트 전략 목록" "$base/backtest/api/strategies"
+  if [[ "$BACKTEST_MODE" == "local" ]]; then
+    local code
+    code="$(http_code "$base/backtest/api/health")"
+    if [[ "$code" == "200" ]]; then
+      info "OK   백테스트 API — 로컬 PC 워커 연결됨 ($base/backtest/api/health)"
+    else
+      warn "백테스트 API 미연결 (HTTP ${code:-000}): 로컬 PC에서 './deploy/local_backtest_worker.sh install' 실행 필요"
+    fi
+  else
+    check_url "백테스트 API" "$base/backtest/api/health"
+    check_url "백테스트 전략 목록" "$base/backtest/api/strategies"
+  fi
   check_url "전략 빌더 화면" "$base/builder"
   check_url "백테스트 화면" "$base/backtest"
   asset="$(curl -s --max-time 15 -K "$CURL_AUTH_CONFIG" "$base/backtest" 2>/dev/null \
@@ -696,12 +751,13 @@ print_summary() {
   printf '  백테스트  : http://%s:%s/backtest\n' "$host" "$WEB_PORT"
   printf '  로그인    : %s\n' "$AUTH_NOTE"
   printf '  PostgreSQL: %s\n' "$DB_STATUS"
+  printf '  백테스트  : %s\n' "$([[ "$BACKTEST_MODE" == "local" ]] && echo '로컬 PC 워커 (SSH 역터널 → 127.0.0.1:8002)' || echo '이 서버')"
   printf '  LEAN      : %s\n' "$LEAN_STATUS"
   if [[ ${#WARNINGS[@]} -gt 0 ]]; then
     printf '  경고 %d건:\n' "${#WARNINGS[@]}"
     printf '   - %s\n' "${WARNINGS[@]}"
   fi
-  printf '  로그      : sudo journalctl -u open-trading-backtest-api -f  (서비스명: %s)\n' "${SERVICES[*]}"
+  printf '  로그      : sudo journalctl -u %s -f  (서비스명: %s)\n' "${SERVICES[0]}" "${SERVICES[*]}"
   printf '==================================================\n'
 }
 
@@ -712,6 +768,7 @@ main() {
   # KIS 앱키와 DB 비밀번호가 들어 있는 파일은 서비스 사용자만 읽게 한다.
   chmod 600 "$APP_DIR/kis_devlp.yaml" "$APP_DIR/backtester/.env" 2>/dev/null || true
   install_system_packages
+  resolve_backtest_mode
   ensure_docker
   ensure_swap
   ensure_node
