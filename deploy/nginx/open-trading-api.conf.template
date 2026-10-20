@@ -1,0 +1,59 @@
+# LIMSON (open-trading-api) — 단일 포트(@WEB_PORT@) 진입점
+# deploy/server_setup.sh가 /etc/nginx/conf.d/open-trading-api.conf로 렌더링한다. 직접 수정하지 말 것.
+#
+#   /backtest/api/*   → 백테스트 API   127.0.0.1:8002 (/api/*)
+#   /backtest*        → 백테스트 웹    127.0.0.1:3001 (페이지 + /backtest-static/_next 자원)
+#   /api/*            → 전략 빌더 API  127.0.0.1:8000 (실시간 호가 WebSocket 포함)
+#   그 외             → 전략 빌더 웹   127.0.0.1:3000 (/, /builder, /execute, /_next)
+
+map $http_upgrade $open_trading_connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen @WEB_PORT@;
+    server_name _;
+
+    # 주문/계좌 API가 함께 노출되므로 기본으로 Basic 인증을 건다 (BASIC_AUTH=off로 배포하면 해제).
+    auth_basic @AUTH_BASIC@;
+    auth_basic_user_file /etc/nginx/open-trading-api.htpasswd;
+
+    client_max_body_size 20m;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    # 클라이언트가 보낸 값을 이어 붙이지 않고 덮어써서 백엔드 IP 기반 유량 제한을 위조할 수 없게 한다.
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $open_trading_connection_upgrade;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+
+    # LEAN 백테스트는 동기 요청으로 수 분까지 걸릴 수 있다 (executor 타임아웃 600초).
+    location /backtest/api/ {
+        proxy_pass http://127.0.0.1:8002/api/;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
+    }
+
+    location /backtest {
+        proxy_pass http://127.0.0.1:3001;
+    }
+
+    location /api/market/ws/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+    }
+}

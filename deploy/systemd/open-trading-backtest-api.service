@@ -1,0 +1,19 @@
+[Unit]
+Description=LIMSON Backtester API (FastAPI 127.0.0.1:8002, LEAN via Docker)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_GROUP@
+WorkingDirectory=@APP_DIR@/backtester
+# DATABASE_URL 등 서버별 값. backtester/.env보다 우선한다 (load_dotenv는 기존 환경변수를 덮어쓰지 않음).
+EnvironmentFile=-@APP_ENV_FILE@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@APP_DIR@/backtester/.venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8002
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

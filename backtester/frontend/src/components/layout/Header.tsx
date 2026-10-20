@@ -28,8 +28,8 @@ export function Header() {
       <header className="sticky top-0 z-50 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
         <div className="w-full px-4">
           <div className="flex items-center justify-between h-16">
-            {/* 로고 */}
-            <Link href="/" className="flex items-center gap-3">
+            {/* 로고: 단일 포트 배포에서 "/"는 전략 빌더 앱이므로 이 앱의 홈 경로로 직접 연결 */}
+            <Link href="/backtest" className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-[#245bee] flex items-center justify-center">
                 <TrendingUp className="w-6 h-6 text-white" />
               </div>

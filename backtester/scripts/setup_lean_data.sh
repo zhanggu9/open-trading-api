@@ -49,6 +49,9 @@ echo "  ✅ Docker 실행 중"
 echo "[2/7] Lean Docker 이미지 확인 중..."
 if docker images -q "$LEAN_IMAGE" 2>/dev/null | grep -q .; then
     echo "  ✅ Lean 이미지 존재: $LEAN_IMAGE"
+elif [ "${LEAN_SKIP_PULL:-0}" = "1" ]; then
+    # 서버 배포(deploy/server_setup.sh)는 디스크 여유를 확인한 뒤 이미지를 직접 받는다.
+    echo "  ⏭️  LEAN_SKIP_PULL=1: 이미지 다운로드를 건너뜁니다."
 else
     echo "  📦 Lean 이미지 다운로드 중 (약 2-5GB, 몇 분 소요)..."
     docker pull "$LEAN_IMAGE"

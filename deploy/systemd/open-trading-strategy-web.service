@@ -1,0 +1,19 @@
+[Unit]
+Description=LIMSON Strategy Builder Web (Next.js 127.0.0.1:3000)
+After=network-online.target open-trading-strategy-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_GROUP@
+WorkingDirectory=@APP_DIR@/strategy_builder/frontend
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+Environment=PATH=@NODE_BIN_DIR@:/usr/local/bin:/usr/bin:/bin
+ExecStart=@NODE_BIN_DIR@/node node_modules/next/dist/bin/next start --hostname 127.0.0.1 --port 3000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
