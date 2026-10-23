@@ -4,11 +4,13 @@ Lean Docker 기반 백테스트 실행.
 """
 
 import logging
+import os
 from time import perf_counter
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import requests
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -37,6 +39,14 @@ _DATA_PREP_ERRORS = (OSError, ValueError)
 
 # 전략 YAML 로드·파라미터 치환 실패
 _STRATEGY_LOAD_ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError)
+
+# 분봉 백테스트 기간 제한
+# - KIS 주식일별분봉조회는 최근 1년치만 보관한다.
+# - 종목·영업일마다 API를 약 4번 호출하므로 기간 상한을 둔다 (환경변수로 조정).
+MINUTE_HISTORY_DAYS = 365
+MINUTE_MAX_DAYS = int(os.getenv("MINUTE_BACKTEST_MAX_DAYS", "92"))
+# LEAN 워밍업이 시작일 이전 날짜 파일을 찾을 때 "파일 없음" 경고가 나지 않도록 빈 파일을 둘 일수
+_MINUTE_WARMUP_PAD_DAYS = 7
 
 
 def _load_benchmark_curve(
@@ -122,6 +132,7 @@ def _lean_run_to_api_response(
     end_date: str,
     initial_capital: float,
     workspace: Optional[Path] = None,
+    resolution: str = "daily",
 ) -> Dict[str, Any]:
     """LeanRun을 프론트엔드 API 응답 형식으로 변환"""
     if not lean_run.success:
@@ -177,6 +188,7 @@ def _lean_run_to_api_response(
         "start_date": start_date,
         "end_date": end_date,
         "initial_capital": initial_capital,
+        "resolution": resolution,
         "final_capital": end_equity,
         "net_profit": net_profit,
         "net_profit_percent": net_profit_pct,
@@ -368,6 +380,153 @@ async def prepare_market_data(
     return result
 
 
+def _parse_request_dates(start_date: str, end_date: str) -> tuple[date, date]:
+    try:
+        req_start = datetime.strptime(start_date, "%Y-%m-%d").date()
+        req_end = datetime.strptime(end_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="날짜는 YYYY-MM-DD 형식이어야 합니다.")
+    if req_start > req_end:
+        raise HTTPException(status_code=400, detail="시작일은 종료일보다 늦을 수 없습니다.")
+    return req_start, req_end
+
+
+def validate_minute_range(start_date: str, end_date: str) -> tuple[date, date]:
+    """분봉 백테스트 기간 검증. 문제가 있으면 400."""
+    req_start, req_end = _parse_request_dates(start_date, end_date)
+    today = date.today()
+    earliest = today - timedelta(days=MINUTE_HISTORY_DAYS)
+    if req_end > today:
+        raise HTTPException(status_code=400, detail="분봉 백테스트 종료일은 오늘 이후일 수 없습니다.")
+    if req_start < earliest:
+        raise HTTPException(
+            status_code=400,
+            detail=f"KIS는 최근 1년치 분봉만 제공합니다. 시작일을 {earliest.isoformat()} 이후로 설정하세요.",
+        )
+    span_days = (req_end - req_start).days + 1
+    if span_days > MINUTE_MAX_DAYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"분봉 백테스트 기간은 최대 {MINUTE_MAX_DAYS}일입니다 (요청 {span_days}일).",
+        )
+    return req_start, req_end
+
+
+def _count_minute_rows(csv_path: Path) -> int:
+    with open(csv_path, "r") as f:
+        return sum(1 for line in f if line.strip())
+
+
+async def prepare_minute_market_data(
+    symbols: List[str],
+    start_date: str,
+    end_date: str,
+    workspace: Path,
+) -> dict:
+    """KIS 주식일별분봉조회로 1분봉을 받아 LEAN 날짜별 CSV로 준비한다.
+
+    파일: data/equity/krx/minute/{종목}/{YYYYMMDD}.csv (휴장일은 빈 파일)
+    오늘 이전 날짜의 데이터가 있는 파일은 다시 받지 않는다(분봉은 확정 데이터).
+
+    Returns:
+        {"downloaded": [...], "skipped": [...], "errors": [...], "source": "KIS 분봉"}
+    """
+    from kis_backtest.providers.kis.auth import KISAuth
+    from kis_backtest.providers.kis.data import KISDataProvider
+
+    req_start, req_end = validate_minute_range(start_date, end_date)
+    today = date.today()
+    minute_root = workspace / "data" / "equity" / "krx" / "minute"
+    result = {"downloaded": [], "skipped": [], "errors": [], "source": "KIS 분봉"}
+
+    provider = None
+    is_paper = False
+    for idx, symbol in enumerate(symbols, start=1):
+        symbol_dir = minute_root / symbol.lower()
+        symbol_dir.mkdir(parents=True, exist_ok=True)
+
+        # 워밍업 구간: 데이터 없이 빈 파일만 둔다.
+        pad_day = req_start - timedelta(days=_MINUTE_WARMUP_PAD_DAYS)
+        while pad_day < req_start:
+            (symbol_dir / f"{pad_day:%Y%m%d}.csv").touch(exist_ok=True)
+            pad_day += timedelta(days=1)
+
+        total_rows = 0
+        fetched_days = 0
+        try:
+            day = req_start
+            while day <= req_end:
+                csv_path = symbol_dir / f"{day:%Y%m%d}.csv"
+                if day.weekday() >= 5:
+                    csv_path.touch(exist_ok=True)
+                elif day < today and csv_path.exists() and csv_path.stat().st_size > 0:
+                    total_rows += _count_minute_rows(csv_path)
+                else:
+                    if provider is None:
+                        auth = KISAuth.from_env()
+                        is_paper = auth.is_paper
+                        provider = KISDataProvider(auth)
+                    bars = provider.get_minute_bars_for_date(symbol, day)
+                    DataConverter.bars_to_lean_minute_csv(bars, csv_path)
+                    total_rows += len(bars)
+                    fetched_days += 1
+                day += timedelta(days=1)
+        except _KIS_DATA_ERRORS as exc:
+            # 인증·모의투자 미지원 같은 오류는 다른 종목도 같으므로 여기서 멈춘다.
+            logger.error(f"[KIS 분봉] 조회 오류: {symbol} ({type(exc).__name__})")
+            if isinstance(exc, requests.RequestException):
+                hint = " KIS API 서버에 연결하지 못했습니다. 네트워크 상태를 확인하세요."
+            elif is_paper:
+                hint = " 주식일별분봉조회는 KIS 실전 인증이 필요합니다. 설정에서 실전 모드로 인증한 뒤 다시 실행하세요."
+            elif provider is None:
+                hint = " KIS 인증 설정(kis_devlp.yaml의 my_app/my_sec)을 확인하세요."
+            else:
+                hint = ""
+            for remaining_symbol in symbols[idx - 1:]:
+                result["errors"].append({
+                    "symbol": remaining_symbol,
+                    "error": f"KIS 분봉 조회 오류: {exc}.{hint}",
+                })
+            break
+
+        if total_rows == 0:
+            result["errors"].append({
+                "symbol": symbol,
+                "error": (
+                    f"KIS에서 {start_date} ~ {end_date} 분봉을 받지 못했습니다 "
+                    "(영업일이 포함됐는지, 최근 1년 이내인지 확인하세요)"
+                ),
+            })
+            continue
+
+        if fetched_days:
+            result["downloaded"].append(symbol)
+        else:
+            result["skipped"].append(symbol)
+        logger.info(
+            f"[KIS 분봉] 준비 완료 ({idx}/{len(symbols)}): {symbol}, "
+            f"{total_rows} bars, API 조회 {fetched_days}일"
+        )
+
+    return result
+
+
+async def prepare_backtest_data(
+    resolution: str,
+    symbols: List[str],
+    start_date: str,
+    end_date: str,
+    workspace: Path,
+) -> dict:
+    """해상도에 맞춰 LEAN 입력 데이터를 준비한다 (일봉: PostgreSQL, 분봉: KIS)."""
+    if resolution == "minute":
+        return await prepare_minute_market_data(symbols, start_date, end_date, workspace)
+    _parse_request_dates(start_date, end_date)
+    result = await prepare_market_data(symbols, start_date, end_date, workspace)
+    result["source"] = "PostgreSQL"
+    return result
+
+
 async def prepare_benchmark_data(
     start_date: str,
     end_date: str,
@@ -501,21 +660,23 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
     manager = LeanProjectManager()
     workspace = manager.workspace
     
-    # 시장 데이터 준비 (PostgreSQL → Lean CSV)
+    # 시장 데이터 준비 (일봉: PostgreSQL / 분봉: KIS → Lean CSV)
     data_started = perf_counter()
     try:
-        data_result = await prepare_market_data(
+        data_result = await prepare_backtest_data(
+            resolution=request.resolution,
             symbols=request.symbols,
             start_date=start_date,
             end_date=end_date,
             workspace=workspace,
         )
         logger.info(
-            f"[Data] 결과: PostgreSQL 조회 {len(data_result['downloaded'])}, "
-            f"실패 {len(data_result['errors'])}"
+            f"[Data] 결과: {data_result['source']} 조회 {len(data_result['downloaded'])}, "
+            f"캐시 {len(data_result['skipped'])}, 실패 {len(data_result['errors'])}"
         )
         logger.info(
-            f"[Timing] phase=postgresql_data seconds={perf_counter() - data_started:.3f}"
+            f"[Timing] phase=market_data resolution={request.resolution} "
+            f"seconds={perf_counter() - data_started:.3f}"
         )
         
         # 데이터 없으면 에러
@@ -527,7 +688,7 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
             )
             raise HTTPException(
                 status_code=400,
-                detail=f"PostgreSQL 데이터 준비 실패 ({failed_symbols}): {error_msg}",
+                detail=f"{data_result['source']} 데이터 준비 실패 ({failed_symbols}): {error_msg}",
             )
             
     except HTTPException:
@@ -559,6 +720,7 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
             tax_rate=request.tax_rate or 0.002,
             slippage=request.slippage or 0.0,
             initial_capital=request.initial_capital,
+            resolution=request.resolution,
         )
         generator = LeanCodeGenerator(definition, config=config)
         code = generator.generate(
@@ -612,6 +774,7 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
                 lean_run, definition.name, request.symbols,
                 start_date, end_date, request.initial_capital,
                 workspace=workspace,
+                resolution=request.resolution,
             )
             logger.info(
                 f"[Timing] phase=total seconds={perf_counter() - request_started:.3f}"
@@ -644,6 +807,7 @@ class CustomBacktestRequest(BaseModel):
     commission_rate: Optional[float] = 0.00015  # 수수료율 (기본 0.015%)
     tax_rate: Optional[float] = 0.002  # 거래세율 (기본 0.2%)
     slippage: Optional[float] = 0.0  # 슬리피지 (기본 0%)
+    resolution: Literal["daily", "minute"] = "daily"  # 봉 단위 (daily: PostgreSQL, minute: KIS 1분봉)
 
 
 @router.post(
@@ -674,21 +838,23 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
     manager = LeanProjectManager()
     workspace = manager.workspace
     
-    # 시장 데이터 준비 (PostgreSQL → Lean CSV)
+    # 시장 데이터 준비 (일봉: PostgreSQL / 분봉: KIS → Lean CSV)
     data_started = perf_counter()
     try:
-        data_result = await prepare_market_data(
+        data_result = await prepare_backtest_data(
+            resolution=request.resolution,
             symbols=request.symbols,
             start_date=request.start_date,
             end_date=request.end_date,
             workspace=workspace,
         )
         logger.info(
-            f"[Data] 결과: PostgreSQL 조회 {len(data_result['downloaded'])}, "
-            f"실패 {len(data_result['errors'])}"
+            f"[Data] 결과: {data_result['source']} 조회 {len(data_result['downloaded'])}, "
+            f"캐시 {len(data_result['skipped'])}, 실패 {len(data_result['errors'])}"
         )
         logger.info(
-            f"[Timing] phase=postgresql_data seconds={perf_counter() - data_started:.3f}"
+            f"[Timing] phase=market_data resolution={request.resolution} "
+            f"seconds={perf_counter() - data_started:.3f}"
         )
         
         # 데이터 없으면 에러
@@ -700,7 +866,7 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
             )
             raise HTTPException(
                 status_code=400,
-                detail=f"PostgreSQL 데이터 준비 실패 ({failed_symbols}): {error_msg}",
+                detail=f"{data_result['source']} 데이터 준비 실패 ({failed_symbols}): {error_msg}",
             )
             
     except HTTPException:
@@ -735,6 +901,7 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
             tax_rate=request.tax_rate or 0.002,
             slippage=request.slippage or 0.0,
             initial_capital=request.initial_capital,
+            resolution=request.resolution,
         )
         generator = LeanCodeGenerator(schema, config=config)
         code = generator.generate(
@@ -788,6 +955,7 @@ async def run_custom_backtest(request: CustomBacktestRequest) -> BacktestRespons
                 lean_run, schema.name, request.symbols,
                 request.start_date, request.end_date, request.initial_capital,
                 workspace=workspace,
+                resolution=request.resolution,
             )
             logger.info(
                 f"[Timing] phase=total seconds={perf_counter() - request_started:.3f}"

@@ -23,7 +23,26 @@ import { FileDropZone } from "@/components/file";
 import { StockInput } from "@/components/symbols";
 import { EquityChart } from "@/components/backtest";
 import type { ChartDataPoint, TradeMarker } from "@/components/backtest";
-import type { Strategy, BacktestResult, ParamDefinition } from "@/types";
+import type { Strategy, BacktestResult, BacktestResolution, ParamDefinition } from "@/types";
+
+// 분봉 백테스트 제한 (backtester/backend/routes/backtest.py 와 같은 값)
+// KIS 주식일별분봉조회는 최근 1년치만 보관하고, 종목·영업일마다 API를 여러 번 호출한다.
+const MINUTE_HISTORY_DAYS = 365;
+const MINUTE_MAX_DAYS = 92;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const RESOLUTION_OPTIONS: { value: BacktestResolution; label: string }[] = [
+  { value: "daily", label: "일봉" },
+  { value: "minute", label: "분봉 (1분)" },
+];
+
+function toDateInput(date: Date): string {
+  return date.toISOString().split("T")[0];
+}
+
+function daysBetween(start: string, end: string): number {
+  return Math.round((Date.parse(end) - Date.parse(start)) / DAY_MS);
+}
 
 // 통계 카드 컴포넌트
 function StatCard({
@@ -162,6 +181,7 @@ export default function BacktestPage() {
   });
   const [endDate, setEndDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [initialCapital, setInitialCapital] = useState(100_000_000);
+  const [resolution, setResolution] = useState<BacktestResolution>("daily");
   
   // 거래 비용 설정
   const [commissionRate, setCommissionRate] = useState(0.015); // 0.015%
@@ -207,7 +227,9 @@ export default function BacktestPage() {
   // 백엔드에서 실시간 진행 이벤트를 보내는 구조는 아니므로, 단계/진행률은 예상 안내다.
   const loadingMessages = [
     "백테스트 요청 확인 중...",
-    "PostgreSQL 주가 데이터 준비 중...",
+    resolution === "minute"
+      ? "KIS 분봉 데이터 받는 중 (종목·기간에 따라 수 분 걸릴 수 있음)..."
+      : "PostgreSQL 주가 데이터 준비 중...",
     "벤치마크 데이터 확인 중...",
     "LEAN 전략 코드 생성 중...",
     "LEAN 엔진 실행 중...",
@@ -251,6 +273,7 @@ export default function BacktestPage() {
     setSelectedId("sma_crossover");
     setImportedYaml(null);
     setSelectedStocks(["000020"]);
+    setResolution("daily");
     setStartDate("2025-01-02");
     setEndDate("2026-10-14");
     setInitialCapital(100_000_000);
@@ -292,7 +315,8 @@ export default function BacktestPage() {
           initialCapital,
           commissionRate / 100, // % → 소수점
           taxRate / 100,
-          slippage / 100
+          slippage / 100,
+          resolution
         );
       }
       // 2. 전략 선택 시 프리셋 백테스트
@@ -307,6 +331,7 @@ export default function BacktestPage() {
           tax_rate: taxRate / 100,
           slippage: slippage / 100,
           param_overrides: Object.keys(paramOverrides).length > 0 ? paramOverrides : undefined,
+          resolution,
         });
       } else {
         throw new Error("전략을 선택하거나 파일을 Import하세요");
@@ -322,7 +347,39 @@ export default function BacktestPage() {
     } finally {
       setIsRunning(false);
     }
-  }, [selectedId, importedYaml, selectedStocks, startDate, endDate, initialCapital, commissionRate, taxRate, slippage, paramOverrides]);
+  }, [selectedId, importedYaml, selectedStocks, startDate, endDate, initialCapital, commissionRate, taxRate, slippage, paramOverrides, resolution]);
+
+  // 분봉은 가능한 기간이 좁으므로, 전환할 때 범위를 벗어나 있으면 최근 1주일로 맞춘다.
+  const handleResolutionChange = useCallback((next: BacktestResolution) => {
+    setResolution(next);
+    if (next !== "minute") return;
+    const today = toDateInput(new Date());
+    const earliest = toDateInput(new Date(Date.now() - MINUTE_HISTORY_DAYS * DAY_MS));
+    const end = endDate > today ? today : endDate;
+    if (startDate < earliest || daysBetween(startDate, end) + 1 > MINUTE_MAX_DAYS) {
+      setEndDate(end);
+      setStartDate(toDateInput(new Date(Date.parse(end) - 6 * DAY_MS)));
+    }
+  }, [startDate, endDate]);
+
+  const minuteLimits = useMemo(() => ({
+    earliest: toDateInput(new Date(Date.now() - MINUTE_HISTORY_DAYS * DAY_MS)),
+    today: toDateInput(new Date()),
+  }), []);
+
+  // 분봉 기간 검증 (서버도 같은 기준으로 400을 돌려준다)
+  const minuteRangeError = useMemo(() => {
+    if (resolution !== "minute") return null;
+    if (!startDate || !endDate) return "시작일과 종료일을 입력하세요.";
+    if (startDate > endDate) return "시작일은 종료일보다 늦을 수 없습니다.";
+    if (endDate > minuteLimits.today) return "분봉 종료일은 오늘 이후일 수 없습니다.";
+    if (startDate < minuteLimits.earliest) {
+      return `KIS는 최근 1년치 분봉만 제공합니다. 시작일을 ${minuteLimits.earliest} 이후로 설정하세요.`;
+    }
+    const span = daysBetween(startDate, endDate) + 1;
+    if (span > MINUTE_MAX_DAYS) return `분봉 기간은 최대 ${MINUTE_MAX_DAYS}일입니다 (현재 ${span}일).`;
+    return null;
+  }, [resolution, startDate, endDate, minuteLimits]);
 
   // Y축 범위 계산 (15% 패딩)
   const yAxisDomain = useMemo((): [number, number] => {
@@ -378,7 +435,7 @@ export default function BacktestPage() {
     }));
   }, [result]);
 
-  const canRun = (selectedId || importedYaml) && selectedStocks.length > 0;
+  const canRun = (selectedId || importedYaml) && selectedStocks.length > 0 && !minuteRangeError;
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8 relative">
@@ -550,12 +607,48 @@ export default function BacktestPage() {
               기간 설정
             </h3>
             <div className="space-y-3">
+              <div>
+                <label className="text-xs text-slate-500 mb-1 block">봉 단위</label>
+                <div
+                  role="radiogroup"
+                  aria-label="봉 단위"
+                  className="grid grid-cols-2 gap-1 p-1 rounded-lg bg-slate-100 dark:bg-slate-800"
+                >
+                  {RESOLUTION_OPTIONS.map((option) => {
+                    const active = resolution === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        onClick={() => handleResolutionChange(option.value)}
+                        className={cn(
+                          "py-1.5 rounded-md text-sm font-medium transition-colors",
+                          active
+                            ? "bg-white dark:bg-slate-700 text-kis-blue shadow-sm"
+                            : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                        )}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-slate-400 mt-1">
+                  {resolution === "minute"
+                    ? `KIS 1분봉 · 최근 1년 이내 · 최대 ${MINUTE_MAX_DAYS}일 · 실전 인증 필요 · 지표 기간은 분봉 개수 기준`
+                    : "PostgreSQL 일봉"}
+                </p>
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-xs text-slate-500 mb-1 block">시작일</label>
                   <input
                     type="date"
                     value={startDate}
+                    min={resolution === "minute" ? minuteLimits.earliest : undefined}
+                    max={resolution === "minute" ? minuteLimits.today : undefined}
                     onChange={(e) => setStartDate(e.target.value)}
                     className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm"
                   />
@@ -565,11 +658,18 @@ export default function BacktestPage() {
                   <input
                     type="date"
                     value={endDate}
+                    min={resolution === "minute" ? minuteLimits.earliest : undefined}
+                    max={resolution === "minute" ? minuteLimits.today : undefined}
                     onChange={(e) => setEndDate(e.target.value)}
                     className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm"
                   />
                 </div>
               </div>
+              {minuteRangeError && (
+                <p role="alert" className="text-xs text-amber-600 dark:text-amber-400">
+                  {minuteRangeError}
+                </p>
+              )}
               <div>
                 <label className="text-xs text-slate-500 mb-1 block">초기 자본 (원)</label>
                 <input
@@ -705,6 +805,9 @@ export default function BacktestPage() {
 
           {result ? (
             <>
+              <p className="text-xs text-slate-500">
+                {result.resolution === "minute" ? "1분봉" : "일봉"} 백테스트 · {result.start_date} ~ {result.end_date}
+              </p>
               {/* 요약 카드 */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <StatCard

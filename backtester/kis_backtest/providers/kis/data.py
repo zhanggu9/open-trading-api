@@ -64,7 +64,13 @@ class KISDataProvider:
         if resolution == Resolution.DAILY:
             return self._get_daily_bars(symbol, start, end)
         elif resolution == Resolution.MINUTE:
-            return self._get_minute_bars(symbol, end)  # 분봉은 단일 날짜
+            bars: List[Bar] = []
+            day = start
+            while day <= end:
+                if day.weekday() < 5:  # 주말은 장이 없으므로 호출하지 않는다
+                    bars.extend(self.get_minute_bars_for_date(symbol, day))
+                day += timedelta(days=1)
+            return bars
         else:
             raise ValueError(f"지원하지 않는 해상도: {resolution}")
     
@@ -148,20 +154,28 @@ class KISDataProvider:
         logger.info(f"일봉 조회 완료: {symbol}, {len(bars)}건")
         return bars
     
-    def _get_minute_bars(self, symbol: str, target_date: date) -> List[Bar]:
-        """분봉 조회
-        
+    def get_minute_bars_for_date(self, symbol: str, target_date: date) -> List[Bar]:
+        """하루치 1분봉 조회 (09:00~15:30)
+
         API: /uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice
-        TR ID: FHKST03010230
-        
-        주의: 분봉은 당일 또는 최근 1년 이내만 조회 가능.
+        TR ID: FHKST03010230 (주식일별분봉조회)
+
+        - 한 번에 최대 120건이라 15:30부터 과거 방향으로 페이지를 넘긴다.
+        - KIS 서버는 최근 1년치 분봉만 보관한다.
+        - 휴장일을 요청하면 직전 거래일 데이터가 올 수 있어, 영업일자가 다른 행은 버린다.
+
+        Returns:
+            시간순 Bar 리스트. 휴장일이면 빈 리스트.
+
+        Raises:
+            KISError: API가 오류를 돌려준 경우 (모의투자 미지원, 인증 실패 등)
         """
         date_str = target_date.strftime("%Y%m%d")
-        
-        all_data = []
+
+        rows = []
         current_time = "153000"  # 장 마감 시간부터 역순 조회
-        
-        for _ in range(10):  # 최대 10페이지
+
+        for _ in range(10):  # 하루 약 390건 → 4페이지면 충분, 안전 상한 10
             params = {
                 "FID_COND_MRKT_DIV_CODE": "J",
                 "FID_INPUT_ISCD": symbol,
@@ -170,45 +184,51 @@ class KISDataProvider:
                 "FID_PW_DATA_INCU_YN": "Y",
                 "FID_FAKE_TICK_INCU_YN": "",
             }
-            
-            resp = self._auth.get(
-                ApiPath.DOMESTIC_MINUTE,
-                params,
-                "FHKST03010230"
-            )
-            
+
+            resp = None
+            for attempt in range(_RATE_LIMIT_MAX_RETRIES):
+                resp = self._auth.get(ApiPath.DOMESTIC_MINUTE, params, TrId.DAILY_MINUTE_PRICE)
+                if resp.is_ok() or resp.error_code != _RATE_LIMIT_CODE:
+                    break
+                if attempt < _RATE_LIMIT_MAX_RETRIES - 1:
+                    logger.warning(
+                        f"[RateLimit] {symbol} {date_str} 분봉 EGW00201 — {_RATE_LIMIT_WAIT}초 대기 후 재시도 "
+                        f"({attempt + 1}/{_RATE_LIMIT_MAX_RETRIES})"
+                    )
+                    time.sleep(_RATE_LIMIT_WAIT)
+
             if not resp.is_ok():
-                logger.error(f"분봉 조회 실패: {symbol} - {resp.error_message}")
-                break
-            
-            data = resp.get_output2()
+                raise KISError(
+                    f"분봉 조회 실패: {symbol} {date_str} - {resp.error_message}",
+                    error_code=resp.error_code,
+                    error_message=resp.error_message,
+                )
+
+            data = [
+                row for row in (resp.get_output2() or [])
+                if row.get("stck_cntg_hour")
+                and row.get("stck_bsop_date", date_str) == date_str
+            ]
             if not data:
                 break
-            
-            all_data.extend(data)
-            
-            # 다음 페이지: 가장 이른 시간 찾기
-            times = [d.get("stck_cntg_hour", "") for d in data if d.get("stck_cntg_hour")]
-            min_time = min(times) if times else ""
-            
-            if min_time <= "090000" or len(data) < 120:
+
+            rows.extend(data)
+
+            min_time = min(row["stck_cntg_hour"] for row in data)
+            if min_time <= "090000" or len(data) < 120 or min_time >= current_time:
                 break
-            
+
             current_time = min_time
             self._auth.smart_sleep()
-        
-        # Bar 객체로 변환
+
         bars = []
         seen = set()
-        for row in all_data:
+        for row in rows:
             try:
-                time_str = row.get("stck_cntg_hour", "")
-                dt = datetime.strptime(f"{date_str}{time_str}", "%Y%m%d%H%M%S")
-                
+                dt = datetime.strptime(f"{date_str}{row['stck_cntg_hour']}", "%Y%m%d%H%M%S")
                 if dt in seen:
                     continue
                 seen.add(dt)
-                
                 bars.append(Bar(
                     time=dt,
                     open=float(row.get("stck_oprc", 0)),
@@ -220,11 +240,11 @@ class KISDataProvider:
             except (ValueError, TypeError) as e:
                 logger.warning(f"분봉 파싱 오류: {e}")
                 continue
-        
+
         bars.sort(key=lambda b: b.time)
-        logger.info(f"분봉 조회 완료: {symbol}, {len(bars)}건")
+        logger.info(f"분봉 조회 완료: {symbol} {date_str}, {len(bars)}건")
         return bars
-    
+
     def get_quote(self, symbol: str) -> Quote:
         """현재 호가 조회
         

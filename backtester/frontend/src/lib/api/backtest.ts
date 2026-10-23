@@ -4,6 +4,7 @@
 
 import { apiPost } from "./client";
 import type {
+  BacktestResolution,
   BacktestRequest,
   CustomBacktestRequest,
   BacktestResponse,
@@ -27,7 +28,8 @@ export async function runCustomBacktest(
   initialCapital: number,
   commissionRate?: number,
   taxRate?: number,
-  slippage?: number
+  slippage?: number,
+  resolution: BacktestResolution = "daily"
 ): Promise<BacktestResponse> {
   const request: CustomBacktestRequest = {
     yaml_content: yamlContent,
@@ -38,6 +40,7 @@ export async function runCustomBacktest(
     commission_rate: commissionRate,
     tax_rate: taxRate,
     slippage,
+    resolution,
   };
   return apiPost("/api/backtest/run-custom", request);
 }

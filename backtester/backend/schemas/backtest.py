@@ -3,7 +3,7 @@
 """
 
 from datetime import date
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -30,6 +30,10 @@ class BacktestRequest(BaseModel):
     slippage: Optional[float] = Field(
         default=0.0,
         description="슬리피지 (기본 0 = 0%)"
+    )
+    resolution: Literal["daily", "minute"] = Field(
+        default="daily",
+        description="봉 단위: daily(일봉, PostgreSQL) | minute(1분봉, KIS 주식일별분봉조회)"
     )
 
     class Config:

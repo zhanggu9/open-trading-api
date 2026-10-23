@@ -38,6 +38,17 @@ class CodeGenConfig:
     tax_rate: float = 0.002  # 0.2% (KRX 매도세)
     slippage: float = 0.0  # 슬리피지 (기본 0%)
     initial_capital: float = 100_000_000  # 1억원
+    resolution: str = "daily"  # daily | minute (minute은 KRX만)
+
+    def __post_init__(self) -> None:
+        if self.resolution not in ("daily", "minute"):
+            raise ValueError(f"지원하지 않는 해상도: {self.resolution}")
+        if self.resolution == "minute" and self.market != "krx":
+            raise ValueError("분봉 백테스트는 KRX(국내 주식)만 지원합니다.")
+
+    @property
+    def lean_resolution(self) -> str:
+        return "Resolution.Minute" if self.resolution == "minute" else "Resolution.Daily"
 
 
 class LeanCodeGenerator:
@@ -390,9 +401,11 @@ class LeanCodeGenerator:
                 candlestick_imports = f"\nfrom QuantConnect.Indicators.CandlestickPatterns import {classes_str}"
 
         slippage_info = f"\n슬리피지: {self.config.slippage * 100:.2f}%" if self.config.slippage > 0 else ""
+        resolution_label = "1분봉" if self.config.resolution == "minute" else "일봉"
         header = f'''자동 생성된 Lean 알고리즘
 전략: {self.schema.name}
 ID: {self.schema.id}
+해상도: {resolution_label}
 생성일: {datetime.now().isoformat()}
 수수료율: {self.config.commission_rate * 100:.4f}%
 거래세율: {self.config.tax_rate * 100:.2f}%{slippage_info}
@@ -410,6 +423,53 @@ from datetime import datetime, timedelta{candlestick_imports}'''
     
     def _generate_krx_data_class(self) -> str:
         """KRX 커스텀 데이터 클래스 (주식 + 지수)"""
+        if self.config.resolution == "minute":
+            equity_class = self._generate_krx_minute_equity_class()
+        else:
+            equity_class = self._generate_krx_daily_equity_class()
+        return equity_class + self._generate_krx_index_class()
+
+    def _generate_krx_minute_equity_class(self) -> str:
+        """KRX 1분봉 데이터 클래스
+
+        분봉은 날짜별 파일(/Data/equity/krx/minute/{종목}/{YYYYMMDD}.csv)로 나눠 두고,
+        LEAN이 요청한 날짜의 파일만 읽게 한다. 한 줄: YYYYMMDDHHMM,open,high,low,close,volume
+        봉 시작 시각을 Time, 1분 뒤를 EndTime으로 둬서 봉이 끝난 뒤에야 전략이 보게 한다.
+        """
+        return '''
+class KRXEquity(PythonData):
+    """한국 주식 1분봉 커스텀 데이터"""
+
+    def GetSource(self, config, date, isLive):
+        symbol = config.Symbol.Value.lower()
+        source = f"/Data/equity/krx/minute/{symbol}/{date.strftime('%Y%m%d')}.csv"
+        return SubscriptionDataSource(source, SubscriptionTransportMedium.LocalFile, FileFormat.Csv)
+
+    def Reader(self, config, line, date, isLive):
+        if not line.strip():
+            return None
+
+        data = KRXEquity()
+        data.Symbol = config.Symbol
+
+        try:
+            cols = line.split(",")
+            data.Time = datetime.strptime(cols[0], "%Y%m%d%H%M")
+            data.EndTime = data.Time + timedelta(minutes=1)
+            data.Value = float(cols[4])
+            data["Open"] = float(cols[1])
+            data["High"] = float(cols[2])
+            data["Low"] = float(cols[3])
+            data["Close"] = float(cols[4])
+            data["Volume"] = int(cols[5])
+        except (IndexError, ValueError):
+            return None
+
+        return data
+'''
+
+    def _generate_krx_daily_equity_class(self) -> str:
+        """KRX 일봉 데이터 클래스"""
         return '''
 class KRXEquity(PythonData):
     """한국 주식 커스텀 데이터"""
@@ -439,7 +499,11 @@ class KRXEquity(PythonData):
             return None
 
         return data
+'''
 
+    def _generate_krx_index_class(self) -> str:
+        """KRX 지수 데이터 클래스 (벤치마크는 해상도와 관계없이 일봉)"""
+        return '''
 
 class KRXIndex(PythonData):
     """한국 지수 커스텀 데이터 (KOSPI 벤치마크용)"""
@@ -648,7 +712,7 @@ class Algorithm(QCAlgorithm):
 {risk_init}
 
         for symbol_str in {symbols_literal}:
-            symbol = self.AddData({data_class}, symbol_str, Resolution.Daily).Symbol
+            symbol = self.AddData({data_class}, symbol_str, {self.config.lean_resolution}).Symbol
             self.symbols.append(symbol)
             self.indicators[symbol] = {{}}
 {candlestick_dict_init}
@@ -657,7 +721,7 @@ class Algorithm(QCAlgorithm):
 {indicator_init}
 {candlestick_init}
 
-        self.SetWarmUp({warmup}, Resolution.Daily)
+        self.SetWarmUp({warmup}, {self.config.lean_resolution})
 
         for symbol in self.symbols:
             self.Securities[symbol].SetFeeModel(CustomFeeModel()){"""

@@ -2,6 +2,9 @@
  * 백테스트 타입 정의 - Lean 전체 통계 반영
  */
 
+/** 봉 단위: daily = 일봉(PostgreSQL), minute = 1분봉(KIS 주식일별분봉조회) */
+export type BacktestResolution = "daily" | "minute";
+
 export interface BacktestRequest {
   strategy_id: string;
   symbols: string[];
@@ -12,6 +15,7 @@ export interface BacktestRequest {
   tax_rate?: number;
   slippage?: number;
   param_overrides?: Record<string, number>;
+  resolution?: BacktestResolution;
 }
 
 export interface CustomBacktestRequest {
@@ -23,6 +27,7 @@ export interface CustomBacktestRequest {
   commission_rate?: number;
   tax_rate?: number;
   slippage?: number;
+  resolution?: BacktestResolution;
 }
 
 /**
@@ -87,6 +92,7 @@ export interface BacktestResult {
   start_date: string;
   end_date: string;
   initial_capital: number;
+  resolution?: BacktestResolution;
   final_capital: number;
   net_profit: number;
   net_profit_percent: number;

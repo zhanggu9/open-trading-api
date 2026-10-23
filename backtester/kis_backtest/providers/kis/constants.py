@@ -15,7 +15,8 @@ class TrId:
     DAILY_PRICE = "FHKST03010100"
     
     # 분봉 조회
-    MINUTE_PRICE = "FHKST03010200"
+    MINUTE_PRICE = "FHKST03010200"  # 당일 분봉
+    DAILY_MINUTE_PRICE = "FHKST03010230"  # 주식일별분봉조회 (과거 일자 분봉, 최대 1년)
     
     # 호가 조회
     ASKING_PRICE = "FHKST01010200"

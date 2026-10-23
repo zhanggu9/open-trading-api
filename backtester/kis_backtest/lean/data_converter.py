@@ -185,3 +185,28 @@ class DataConverter:
         
         # 변환 실행
         return cls._export_symbol(symbol, df, output_path, market_type)
+
+    @classmethod
+    def bars_to_lean_minute_csv(cls, bars: List["Bar"], csv_path: Path) -> Path:
+        """하루치 1분봉을 LEAN 분봉 CSV로 저장한다 (빈 리스트면 빈 파일 = 휴장일).
+
+        한 줄: YYYYMMDDHHMM,open,high,low,close,volume (헤더 없음, KRX 원 단위 정수)
+        중간에 실패해도 깨진 캐시가 남지 않도록 임시 파일에 쓴 뒤 교체한다.
+        """
+        csv_path = Path(csv_path)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        lines = []
+        seen = set()
+        for bar in sorted(bars, key=lambda b: b.time):
+            stamp = bar.time.strftime("%Y%m%d%H%M")
+            if stamp in seen:
+                continue
+            seen.add(stamp)
+            lines.append(
+                f"{stamp},{int(round(bar.open))},{int(round(bar.high))},"
+                f"{int(round(bar.low))},{int(round(bar.close))},{int(bar.volume)}\n"
+            )
+        tmp_path = csv_path.with_suffix(".csv.tmp")
+        tmp_path.write_text("".join(lines))
+        tmp_path.replace(csv_path)
+        return csv_path
